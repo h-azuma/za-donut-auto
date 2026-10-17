@@ -1,0 +1,400 @@
+"""ドーナツ厳選の自動ループ（making-donut.md の手順）。
+
+各段階で「想定した画面になったか」をテンプレートで確認しながら進む。
+想定外の画面で止まったときは、ソフトを終了して最初からやり直す（終了してもバックアップは失われない）。
+当たりが出たら結果画面のまま停止する。ポケモンセンターでのバックアップは手動で行う。
+"""
+
+import logging
+import tempfile
+import time
+from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from . import vision
+from .pico import Pico
+from .screen import Screen
+from .steps import MAP_TO_HOTEL
+
+MAP_TO_POKECENTER = (1.0, -0.1, 0.22)  # マップでホテルZ → ポケモンセンター：ベール（行きの逆）
+
+log = logging.getLogger(__name__)
+
+ROOT = Path(__file__).resolve().parent.parent
+RESULT_DIR = ROOT / "screenshots" / "results"
+ERROR_DIR = ROOT / "screenshots" / "errors"
+BACKUP_DIR = ROOT / "screenshots" / "backups"
+TEMP_DIR = Path(tempfile.gettempdir()) / "za-donut"  # デバッグモード以外で、Discord に送るまで画面を置く場所
+
+WALK_TO_COUNTER_UP = (0.0, 1.0, 2.3)     # ロビー入口 → カウンターの右手前 (x, y, 秒)
+WALK_TO_COUNTER_LAST = (-1.0, 0.0)       # → 「アンシャ」が見えるまでこの向きに歩く
+BERRY_HOLD = 0.04   # きのみ選択の 1 入力（0.03/0.04 でも取りこぼしなし。余裕を持たせた値）
+BERRY_GAP = 0.06
+COOK_SKIP_INTERVAL = 0.5  # 調理の演出を飛ばす A の間隔
+CUTSCENE_TIMEOUT = 75  # 昼夜の切り替わりの演出は 1 分弱。パーティ欄が戻った時点で待つのをやめる（これは上限）
+# レシピで使うきのみ: (名前, きのみを選び終えた画面での行の中心 y, 1 個作るのに使う数)
+RECIPE_BERRIES = [("いじげんカシブ", 513, 2), ("いじげんロゼル", 978, 6)]
+BERRY_ROW_H = 94          # 行の切り出し（読めなかったときに画像で送る用）
+BERRY_ROW_X = (20, 680)
+PRESENT_A_INTERVAL = 0.3  # 完成場面の A の間隔。完成場面は表示後 1〜1.5 秒は A を受け付けない。結果画面が出た直後の A では閉じない
+
+
+class StepFailed(Exception):
+    """想定した画面にならなかった。"""
+
+
+class Runner:
+    def __init__(self, pico: Pico, screen: Screen, keep_screenshots: bool = True):
+        self.p = pico
+        self.s = screen
+        # False のときは画面を一時フォルダに保存する（Discord に送った後で discard() で消す）
+        self.keep_screenshots = keep_screenshots
+        self.last_result_path: Path | None = None  # 直近の当たり / 要確認の結果画面
+        self.last_berries_path: Path | None = None  # そのときのきのみの残り個数
+        self.last_order_frame = None
+
+    # ---- 画面待ち ----
+
+    def wait_for(self, name: str, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if vision.visible(self.s.grab(), name):
+                return
+            time.sleep(0.1)
+        raise StepFailed(f"{name} が {timeout:.0f} 秒以内に表示されませんでした")
+
+    def press_until(self, button: str, name: str, tries: int, timeout: float) -> None:
+        """name が表示されるまで button を押す（押すたびに timeout 秒待つ）。"""
+        for _ in range(tries):
+            self.p.press(button, wait=0)
+            try:
+                self.wait_for(name, timeout)
+                return
+            except StepFailed:
+                pass
+        raise StepFailed(f"{button} を {tries} 回押しても {name} が表示されませんでした")
+
+    def save(self, directory: Path, name: str, frame=None) -> Path:
+        if not self.keep_screenshots:
+            directory = TEMP_DIR
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{datetime.now():%Y%m%d_%H%M%S}_{name}.png"
+        cv2.imwrite(str(path), self.s.grab() if frame is None else frame)
+        return path
+
+    def discard(self, *paths: Path | None) -> None:
+        """一時フォルダに保存した画面を消す（screenshots/ に残す設定のときは何もしない）。"""
+        if self.keep_screenshots:
+            return
+        for path in paths:
+            if path:
+                path.unlink(missing_ok=True)
+
+    # ---- 各段階 ----
+
+    def close_software(self) -> None:
+        """HOME に戻り、ZA が起動中なら終了する。"""
+        self.p.press("home", wait=1.5)
+        frame = self.s.grab()
+        if not vision.visible(frame, "home_gear"):
+            # HOME 以外（ゲーム中で HOME が効かなかった等）。もう一度 HOME を押す
+            self.p.press("home", wait=1.5)
+            self.wait_for("home_gear", 5)
+        if vision.visible(self.s.grab(), "home_playing"):
+            self.p.press("x", wait=0)
+            self.wait_for("close_dialog", 5)
+            self.p.press("a", wait=0)
+            deadline = time.monotonic() + 15
+            while vision.visible(self.s.grab(), "home_playing") or not vision.visible(self.s.grab(), "home_gear"):
+                if time.monotonic() > deadline:
+                    raise StepFailed("ソフトの終了を確認できませんでした")
+                time.sleep(0.3)
+        time.sleep(1.0)
+
+    def launch_to_title(self) -> None:
+        self.p.press("b", wait=0.5)  # コントローラーを起こす（HOME で B は何もしない）
+        self.p.press("a", wait=0)
+        self.wait_for("user_select", 5)
+        self.p.press("a", wait=0)
+        self.wait_for("title", 40)
+        time.sleep(1.0)
+
+    def load_backup(self) -> None:
+        for _ in range(3):
+            self.p.press("x", "b", "dpad_up", hold=0.5, wait=0)
+            try:
+                self.wait_for("backup_menu", 4)
+                break
+            except StepFailed:
+                if not vision.visible(self.s.grab(), "title"):
+                    raise
+        else:
+            raise StepFailed("BACKUP 画面を開けませんでした")
+        # ここを確認できた場合だけ先へ進む（オートセーブで遊ばない）。メニュー表示直後の A は取りこぼすことがある
+        self.press_until("a", "backup_loaded", tries=3, timeout=2.5)
+        self.p.press("a", wait=1.0)
+        self.p.press("a", wait=0)
+        self.wait_for("backup_warning", 5)
+        self.p.press("a", wait=0)
+        self.wait_for("field_party", 45)
+        time.sleep(1.0)
+
+    def travel_to_hotel(self) -> None:
+        for _ in range(3):
+            self.p.press("plus", wait=0)
+            self.wait_for("map", 5)
+            time.sleep(0.5)
+            self.p.tilt(*MAP_TO_HOTEL, wait=0.8)
+            if vision.visible(self.s.grab(), "map_hotel"):
+                break
+            self.p.press("b", wait=1.5)  # 閉じて開き直すとカーソルが現在地に戻る
+        else:
+            raise StepFailed("マップでホテルZ を選べませんでした")
+        self.p.press("a", wait=0)
+        self.wait_for("travel_confirm", 3)
+        self.p.press("a", wait=1.0)
+        self.wait_for("field_party", 15)  # 読み込みが終わるとパーティ欄が出る（実測 3.7 秒）
+        time.sleep(0.3)
+
+    def walk_until(self, x: float, y: float, name: str, timeout: float) -> bool:
+        """スティックを倒したまま歩き、name が見えたらすぐ止まる。見えないまま timeout 秒たったら False。"""
+        self.p.stick(x, y)
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if vision.visible(self.s.grab(), name):
+                    return True
+            return False
+        finally:
+            self.p.stick(0, 0)
+
+    def walk_to_counter(self) -> None:
+        if not self.walk_until(0.0, 1.0, "door_prompt", 4.0):
+            raise StepFailed("ホテルZ のドアの前に着けませんでした")
+        self.p.press("a", wait=0)
+        # 暗転でパーティ欄が消え、ロビーで再び出たら操作できる（実測 3.1 秒）
+        deadline = time.monotonic() + 3
+        while vision.visible(self.s.grab(), "field_party"):
+            if time.monotonic() > deadline:
+                raise StepFailed("ホテルZ に入れませんでした")
+        self.wait_for("field_party", 10)
+        time.sleep(0.3)
+
+        self.p.tilt(*WALK_TO_COUNTER_UP, wait=0)
+        if self.walk_until(*WALK_TO_COUNTER_LAST, "talk_anshya", 1.5):
+            return
+        nudges = [(-1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, 1.0), (1.0, 0.0), (0.0, -1.0)]
+        for x, y in nudges:
+            self.p.tilt(x, y, 0.15, wait=0.5)
+            if vision.visible(self.s.grab(), "talk_anshya"):
+                return
+        raise StepFailed("アンシャに話しかけられる位置に着けませんでした")
+
+    def make_donut(self) -> None:
+        self.p.press("a", wait=1.0)  # 話しかける
+        self.p.press("a", wait=0)    # 「ようこそ！」
+        self.wait_for("menu_make", 5)
+        self.p.press("a", wait=0)    # 「ドーナツをつくる」
+        self.wait_for("berry_order", 5)
+        time.sleep(0.5)
+
+        def tap(button: str, times: int) -> None:
+            for _ in range(times):
+                self.p.press(button, hold=BERRY_HOLD, wait=BERRY_GAP)
+
+        tap("dpad_up", 1)            # クラボ → 一番下のいじげんロゼル
+        tap("a", 6)
+        tap("dpad_up", 5)            # → いじげんカシブ
+        tap("a", 2)
+        # 入力を取りこぼすと別のドーナツになるので、+Lv と kcal が狙いどおりかを確かめてからつくる
+        self.wait_for("order_recipe1", 2)
+        self.last_order_frame = self.s.grab()  # きのみの残り個数（このドーナツの分を引いた数）が写っている
+
+        self.p.press("plus", wait=0)
+        self.wait_for("cook_dialog", 5)
+        # 調理の演出は A で飛ばせるので、完成したドーナツを見せる場面まで A を送り続ける。
+        # 結果画面で A を押すと閉じてしまうので、結果画面へ進める A は完成場面で 1 回だけ押す
+        deadline = time.monotonic() + 25
+        last_a = 0.0
+        while True:
+            frame = self.s.grab()
+            if vision.visible(frame, "result_pluslv"):
+                break
+            if vision.visible(frame, "cook_present"):
+                self.press_until("a", "result_pluslv", tries=10, timeout=PRESENT_A_INTERVAL)
+                break
+            if time.monotonic() > deadline:
+                raise StepFailed("完成したドーナツの場面になりませんでした")
+            if time.monotonic() - last_a >= COOK_SKIP_INTERVAL:
+                self.p.press("a", wait=0)
+                last_a = time.monotonic()
+        # パワー欄はピンクの帯で隠れた状態から順に表示される。「A つぎへ」が出たら表示完了
+        self.wait_for("result_next", 15)
+        time.sleep(0.5)
+
+    def read_result(self) -> vision.PowerResult:
+        frames = [self.s.grab() for _ in range(3)]
+        results = [vision.read_powers(f) for f in frames]
+        if len(set(results)) != 1:
+            raise StepFailed(f"パワーの読み取り結果がフレームごとに違います: {results}")
+        r = results[0]
+        self.last_result_path = self.last_berries_path = None
+        if r.hit or r.uncertain:  # 外れの画面は残さない
+            self.last_result_path = self.save(RESULT_DIR, "HIT" if r.hit else "CHECK", frames[0])
+            self.last_berries_path = self.save_berries()
+        return results[0]
+
+    def save_berries(self) -> Path | None:
+        """きのみ選択画面から、使ったきのみ（カシブ・ロゼル）の行を切り出して保存する。"""
+        f = self.last_order_frame
+        if f is None:
+            return None
+        rows = [f[y - BERRY_ROW_H // 2 - 18:y + BERRY_ROW_H // 2 - 18, BERRY_ROW_X[0]:BERRY_ROW_X[1]]
+                for _, y, _ in RECIPE_BERRIES]
+        return self.save(RESULT_DIR, "berries", np.vstack(rows))
+
+    def read_berries(self, expected: dict[str, int] | None = None) -> tuple[dict[str, int | None], list[str]]:
+        """直近のきのみ選択画面から、レシピで使うきのみの残り個数（このドーナツの分を引いた数）を読む。
+
+        expected（前回の当たりの個数から計算した今回の個数）があれば答え合わせに使う。読めないか合わないときは
+        計算した個数を採り、その画面からまだ見本の無い数字（7 など）を覚える。戻り値は（個数, 計算値を採ったきのみ）。
+        """
+        f = self.last_order_frame
+        counts: dict[str, int | None] = {}
+        fixed = []
+        for name, y, _ in RECIPE_BERRIES:
+            n = None if f is None else vision.read_count(f, y)
+            want = (expected or {}).get(name)
+            if want is not None and n != want:
+                log.info(f"{name} の個数: 読み取り {n} / 計算上 {want} → 計算上の個数を使います")
+                if f is not None and (learned := vision.learn_count(f, y, want)):
+                    log.info(f"数字 {learned} の見本を覚えました")
+                n = want
+                fixed.append(name)
+            counts[name] = n
+        return counts, fixed
+
+    # ---- 当たりのバックアップ ----
+
+    def backup(self) -> Path:
+        """結果画面から、ポケモンセンター：ベールで回復してバックアップを取る。最後の画面の保存先を返す。
+
+        ポケモンセンターの NPC に話しかけるとバックアップが上書きされる。当たりのときだけ呼ぶこと。
+        """
+        self.press_until("a", "donut_again", tries=3, timeout=2.5)  # 結果画面を閉じる
+        self.p.press("b", wait=0)                                    # 「またあとで」
+        self.wait_for("talk_anshya", 8)
+        self.travel_to_pokecenter()
+        return self.save_at_counter()
+
+    def travel_to_pokecenter(self) -> None:
+        """ホテルZ（の中か前）から、ポケモンセンター：ベールのカウンター前まで行く。"""
+        for _ in range(3):
+            self.p.press("plus", wait=0)
+            self.wait_for("map", 5)
+            time.sleep(0.5)
+            self.p.tilt(*MAP_TO_POKECENTER, wait=0.8)
+            if vision.visible(self.s.grab(), "map_pc"):
+                break
+            self.p.press("b", wait=1.5)
+        else:
+            raise StepFailed("マップでポケモンセンター：ベールを選べませんでした")
+        self.p.press("a", wait=0)
+        self.wait_for("travel_confirm", 3)
+        self.p.press("a", wait=1.0)
+        self.wait_for("field_party", 15)
+        time.sleep(0.3)
+        if not self.walk_until(0.0, 1.0, "talk_pc", 7.0):
+            raise StepFailed("ポケモンセンターのカウンターに着けませんでした")
+
+    def refresh_backup(self) -> Path:
+        """ドーナツを作る前の状態で、今の時刻のバックアップを取り直す（昼夜の切り替わりを越えた後に使う）。"""
+        if not vision.visible(self.s.grab(), "talk_pc"):  # 読み込み直後ならカウンター前にいる
+            self.travel_to_pokecenter()
+        return self.save_at_counter()
+
+    def save_at_counter(self) -> Path:
+        """ポケモンセンターのカウンター前（「A 話しかける」が出ている状態）から、回復してバックアップを取る。"""
+        if not vision.visible(self.s.grab(), "talk_pc"):
+            raise StepFailed("ポケモンセンターのカウンター前ではありません")
+        # 話しかける →「おつかれさまです！」→ メニュー
+        self.press_until("a", "pc_menu", tries=4, timeout=2.5)
+        # 「休ませる」で回復する（回復しないとバックアップされない可能性があるため）。
+        # 回復が終わると「他になにをなさいますか？」でメニューに戻る
+        self.p.press("a", wait=2.5)
+        for _ in range(10):
+            if vision.visible(self.s.grab(), "pc_menu"):
+                break
+            self.p.press("a", wait=2.5)
+        else:
+            raise StepFailed("回復後のメニューに戻りませんでした")
+        self.p.press("b", wait=1.5)                                  # 「なんでもない」
+        self.press_until("a", "field_party", tries=3, timeout=2.5)   # 「またのご利用をお待ちしていますね！」
+        # 会話が終わると右上に「レポート中・・・」が出る。消えるまで待ってから完了とする（保存中に終了しないため）
+        try:
+            self.wait_for("reporting", 5)
+        except StepFailed:
+            log.info("「レポート中」の表示を確認できませんでした（すでに保存済みの可能性）")
+        deadline = time.monotonic() + 30
+        clear_since = None
+        while clear_since is None or time.monotonic() - clear_since < 1.0:
+            if vision.visible(self.s.grab(), "reporting"):
+                clear_since = None
+            elif clear_since is None:
+                clear_since = time.monotonic()
+            if time.monotonic() > deadline:
+                raise StepFailed("「レポート中」が 30 秒たっても消えませんでした")
+            time.sleep(0.1)
+        return self.save(BACKUP_DIR, "backup_done")
+
+    # ---- 1 回分 ----
+
+    def wait_cutscene(self) -> bool:
+        """昼夜の切り替わりなどの演出中ならパーティ欄が戻るまで待って True。演出中でなければ False。"""
+        if vision.visible(self.s.grab(), "field_party"):
+            return False
+        deadline = time.monotonic() + CUTSCENE_TIMEOUT
+        while time.monotonic() < deadline:
+            if vision.visible(self.s.grab(), "field_party"):
+                time.sleep(1.0)
+                if vision.visible(self.s.grab(), "field_party"):
+                    return True
+            time.sleep(0.5)
+        return False
+
+    def attempt(self, on_cutscene: Callable[[], bool] | None = None) -> vision.PowerResult:
+        """1 回分。途中で昼夜の切り替わりの演出が入ったら、終わるのを待ってホテルZ への移動からやり直す。
+
+        on_cutscene は演出の後に呼ばれ、True を返すとその場でバックアップを取り直す
+        （ドーナツを作る前なので失うものはない。次の試行から同じ演出に当たらなくなる）。
+        """
+        times = []
+
+        def run(step: Callable[[], None]) -> None:
+            t = time.monotonic()
+            step()
+            times.append(f"{step.__name__}={time.monotonic() - t:.1f}")
+
+        for step in (self.close_software, self.launch_to_title, self.load_backup):
+            run(step)
+        for retry in range(2):
+            try:
+                run(self.travel_to_hotel)
+                run(self.walk_to_counter)
+                break
+            except StepFailed as e:
+                self.p.release_all()
+                if retry or not self.wait_cutscene():
+                    raise
+                log.info(f"演出が入ったため、ホテルZ への移動からやり直します（{e}）")
+                if on_cutscene and on_cutscene():
+                    path = self.refresh_backup()
+                    log.info(f"バックアップを取り直しました: {path.name}")
+                    self.discard(path)
+        run(self.make_donut)
+        log.debug("所要時間: " + " ".join(times))
+        return self.read_result()
