@@ -1,6 +1,6 @@
 """ドーナツ厳選を自動で繰り返す。
 
-当たり（または要確認）が出たら Discord に結果画面ときのみの残り個数を送り、そのままポケモンセンターで回復してバックアップする。
+当たり（または要確認）が出たら Discord に結果画面を送り、そのままポケモンセンターで回復してバックアップする。
 バックアップが終わったら「続ける / きのみがなくなるまで続ける / 止める」をボタンで聞く。
 「きのみがなくなるまで続ける」を選ぶと以後は聞かず、レシピのきのみが 1 個分を下回ったところで止まる。
 discord.json が無いとき（または --no-discord）は、結果画面のままアラーム音を鳴らして停止する。
@@ -137,20 +137,21 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
             berry_text += f"\n（{'・'.join(fixed)} は読み取りが合わなかったため、前回の個数から計算しました）"
         unread = left is None
         log.info(berry_text)
-        send(
-            f"**{kind}**！ {summary}（{tries} 回目、{elapsed / 60:.0f} 分）\n{berry_text}\nバックアップを取りに行きます。",
-            [runner.last_result_path] + ([runner.last_berries_path] if unread else []),
-        )
-        runner.discard(runner.last_berries_path)  # 読めなかったときは上で送ってある
+        # きのみの残り個数はバックアップ後の通知でだけ伝える
+        send(f"**{kind}**！ {summary}（{tries} 回目、{elapsed / 60:.0f} 分）\nバックアップを取りに行きます。",
+             [runner.last_result_path])
         try:
             done = runner.backup()
         except StepFailed as e:
             # 途中の状態が分からないので、自動ではやり直さない
+            runner.discard(runner.last_berries_path)
             stop(f"バックアップの途中で失敗したため停止しました: {e}\n画面を確認して、手動で続きを行ってください。",
                  [runner.save(ERROR_DIR, "backup")])
             return
         log.info("バックアップしました。")
-        images = [done]
+        images = [done] + ([runner.last_berries_path] if unread else [])  # 読めなかったときは画像で
+        if not unread:
+            runner.discard(runner.last_berries_path)
         if left == 0:
             stop(f"バックアップしました。{berry_text}\nきのみが足りないので止めます。", images)
             return
