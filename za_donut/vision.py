@@ -36,7 +36,6 @@ SPECS = {
     "pc_menu":          ("20261017_143258_bk_pc_choice.png",          1430, 660, 280, 130),  # ポケセンの「ショッピング / なんでもない」
     "menu_make":        ("20261017_121639_select_berries_menu_make.png", 1440, 662, 222, 44),
     "berry_order":      ("20261017_121641_select_berries_berry_top.png",  710, 600, 190, 70),
-    "order_recipe1":    ("20261017_121647_select_berries_berry_selected.png", 845, 822, 450, 58),  # ロゼル×6 + カシブ×2 の「+Lv.117 3870kcal」
     "cook_dialog":      ("20261017_121716_cook_cook_dialog.png",        540, 880, 440, 110),
     "cook_present":     ("20261017_1400_cook_present.png",            1310, 640, 200, 140),  # できたドーナツを見せる場面（A で結果画面へ）。アンシャのエプロン
     "result_pluslv":    ("20261017_121755_result_t3.png",               850, 683, 150, 34),
@@ -97,7 +96,6 @@ THRESHOLDS = {
     "talk_pc": 0.7,          # 白文字だけで比べて 0.82〜1.0（出ていないときは 0.35 程度）
     "field_party": 0.7,      # 夜のホテルZ前では 0.82 程度（読み込み中は 0.13 以下）
     "cook_present": 0.93,    # フェードイン途中（0.85 前後）の A は無視されるので、表示しきってから（静止時 0.97）
-    "order_recipe1": 0.95,   # きのみが 1 個ずれても数字が 1〜2 文字変わるだけなので厳しめに
 }
 
 

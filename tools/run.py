@@ -28,7 +28,9 @@ sys.path.insert(0, str(ROOT))
 
 from za_donut.notify import Discord  # noqa: E402
 from za_donut.pico import Pico  # noqa: E402
-from za_donut.runner import ERROR_DIR, RECIPE_BERRIES, Runner, StepFailed  # noqa: E402
+from za_donut.berries import RecipeStore  # noqa: E402
+from za_donut.berries import register_commands as register_recipe_commands  # noqa: E402
+from za_donut.runner import ERROR_DIR, OutOfBerries, Runner, StepFailed  # noqa: E402
 from za_donut.screen import DEFAULT_DEVICE, Screen  # noqa: E402
 from za_donut.target import TargetStore, register_commands  # noqa: E402
 
@@ -52,12 +54,12 @@ def alarm(message: str) -> None:
         pass
 
 
-def berries_left(berries: dict[str, int | None]) -> tuple[int | None, str]:
+def berries_left(berries: dict[str, int | None], recipe: dict[str, int]) -> tuple[int | None, str]:
     """レシピのきのみの残り個数から、あと何個作れるかと、通知用の文を返す（読めない数があれば None）。"""
     parts = [f"{name} {'?' if n is None else n} 個" for name, n in berries.items()]
     if any(n is None for n in berries.values()):
-        return None, f"きのみの残り: {' / '.join(parts)}（読み取れなかったので画像を添付します）"
-    left = min(berries[name] // need for name, _, need in RECIPE_BERRIES)
+        return None, f"きのみの残り: {' / '.join(parts)}（読み取れない数がありました）"
+    left = min(berries[name] // need for name, need in recipe.items())
     return left, f"きのみの残り: {' / '.join(parts)}（あと {left} 個作れます）"
 
 
@@ -100,6 +102,9 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
         t0 = time.monotonic()
         try:
             result = runner.attempt(on_cutscene)
+        except OutOfBerries as e:
+            stop(f"きのみが足りないので止めます: {e}")
+            return
         except StepFailed as e:
             failures += 1
             path = runner.save(ERROR_DIR, f"try{tries}")
@@ -123,17 +128,18 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
         kind = "当たり" if result.hit else "当たりかもしれない結果（読めないパワーあり）"
         log.info(f"{kind}が出ました。結果画面のままにしてあります。")
         if not discord:
-            runner.discard(runner.last_result_path, runner.last_berries_path)
+            runner.discard(runner.last_result_path)
             if use_alarm:
                 alarm(f"{kind}！ 画面を確認してください。Ctrl+C でアラームを止めます。")
             return
 
         # 当たりを捨てることはないので、確認せずにそのままバックアップする。
         # 要確認の結果もバックアップしておけば失うものはない（止めるかどうかは完了後に聞く）
-        expected = {name: last_berries[name] - need for name, _, need in RECIPE_BERRIES if name in last_berries}
+        recipe = runner.last_recipe
+        expected = {name: last_berries[name] - need for name, need in recipe.items() if name in last_berries}
         berries, fixed = runner.read_berries(expected)
         last_berries = {name: n for name, n in berries.items() if n is not None}
-        left, berry_text = berries_left(berries)
+        left, berry_text = berries_left(berries, recipe)
         if fixed:
             berry_text += f"\n（{'・'.join(fixed)} は読み取りが合わなかったため、前回の個数から計算しました）"
         unread = left is None
@@ -145,14 +151,11 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
             done = runner.backup()
         except StepFailed as e:
             # 途中の状態が分からないので、自動ではやり直さない
-            runner.discard(runner.last_berries_path)
             stop(f"バックアップの途中で失敗したため停止しました: {e}\n画面を確認して、手動で続きを行ってください。",
                  [runner.save(ERROR_DIR, "backup")])
             return
         log.info("バックアップしました。")
-        images = [done] + ([runner.last_berries_path] if unread else [])  # 読めなかったときは画像で
-        if not unread:
-            runner.discard(runner.last_berries_path)
+        images = [done]
         if left == 0:
             stop(f"バックアップしました。{berry_text}\nきのみが足りないので止めます。", images)
             return
@@ -195,14 +198,17 @@ def main() -> None:
     logging.getLogger("discord").setLevel(logging.ERROR)  # 音声機能が無いという警告などは出さない
 
     targets = TargetStore()
+    recipes = RecipeStore()
+    log.info(f"レシピ: {recipes.describe()}")
     log.info(f"狙い: {targets.describe()}")
     discord = None if args.no_discord else Discord.from_config()
     if discord:
         register_commands(discord, targets)
+        register_recipe_commands(discord, recipes)
         discord.start()
     try:
         with Screen(args.device) as screen, Pico() as pico:
-            loop(Runner(pico, screen, targets, keep_screenshots=args.debug), discord, args.max, not args.no_alarm, args.until_out)
+            loop(Runner(pico, screen, targets, recipes, keep_screenshots=args.debug), discord, args.max, not args.no_alarm, args.until_out)
     except Exception as e:
         if discord:
             discord.send(f"エラーで停止しました: {e!r}")

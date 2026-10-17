@@ -14,9 +14,8 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
-import numpy as np
 
-from . import powers, target, vision
+from . import berries, powers, target, vision
 from .pico import Pico
 from .screen import Screen
 from .steps import MAP_TO_HOTEL
@@ -35,12 +34,9 @@ WALK_TO_COUNTER_UP = (0.0, 1.0, 2.3)     # ロビー入口 → カウンター�
 WALK_TO_COUNTER_LAST = (-1.0, 0.0)       # → 「アンシャ」が見えるまでこの向きに歩く
 BERRY_HOLD = 0.04   # きのみ選択の 1 入力（0.03/0.04 でも取りこぼしなし。余裕を持たせた値）
 BERRY_GAP = 0.06
+BERRY_SETTLE = 0.4  # カーソル移動・選択の後、画面が落ち着くまで
 COOK_SKIP_INTERVAL = 0.5  # 調理の演出を飛ばす A の間隔
 CUTSCENE_TIMEOUT = 75  # 昼夜の切り替わりの演出は 1 分弱。パーティ欄が戻った時点で待つのをやめる（これは上限）
-# レシピで使うきのみ: (名前, きのみを選び終えた画面での行の中心 y, 1 個作るのに使う数)
-RECIPE_BERRIES = [("いじげんカシブ", 513, 2), ("いじげんロゼル", 978, 6)]
-BERRY_ROW_H = 94          # 行の切り出し（読めなかったときに画像で送る用）
-BERRY_ROW_X = (20, 680)
 PRESENT_A_INTERVAL = 0.3  # 完成場面の A の間隔。完成場面は表示後 1〜1.5 秒は A を受け付けない。結果画面が出た直後の A では閉じない
 
 
@@ -58,16 +54,24 @@ class StepFailed(Exception):
     """想定した画面にならなかった。"""
 
 
+class OutOfBerries(Exception):
+    """レシピのきのみが足りない（やり直しても同じなので、厳選を止める）。"""
+
+
 class Runner:
-    def __init__(self, pico: Pico, screen: Screen, targets: target.TargetStore, keep_screenshots: bool = True):
+    def __init__(self, pico: Pico, screen: Screen, targets: target.TargetStore, recipes: berries.RecipeStore,
+                 keep_screenshots: bool = True):
         self.p = pico
         self.s = screen
         self.targets = targets  # 狙うパワー（Discord から途中で変えられる）
+        self.recipes = recipes  # 使うきのみ（同上）
+        self.berry_list = berries.load_list()  # きのみ一覧の並び（ずれていたら読み直す）
         # False のときは画面を一時フォルダに保存する（Discord に送った後で discard() で消す）
         self.keep_screenshots = keep_screenshots
         self.last_result_path: Path | None = None  # 直近の当たり / 要確認の結果画面
-        self.last_berries_path: Path | None = None  # そのときのきのみの残り個数
-        self.last_order_frame = None
+        self.last_recipe: berries.Recipe = {}      # 直近の試行で使ったレシピ
+        # 直近の試行で、きのみを選んだ直後の残り個数（読めなければ None）と、そのときの画面・行
+        self.last_counts: dict[str, tuple[int | None, object, int]] = {}
 
     # ---- 画面待ち ----
 
@@ -214,17 +218,7 @@ class Runner:
         self.wait_for("berry_order", 5)
         time.sleep(0.5)
 
-        def tap(button: str, times: int) -> None:
-            for _ in range(times):
-                self.p.press(button, hold=BERRY_HOLD, wait=BERRY_GAP)
-
-        tap("dpad_up", 1)            # クラボ → 一番下のいじげんロゼル
-        tap("a", 6)
-        tap("dpad_up", 5)            # → いじげんカシブ
-        tap("a", 2)
-        # 入力を取りこぼすと別のドーナツになるので、+Lv と kcal が狙いどおりかを確かめてからつくる
-        self.wait_for("order_recipe1", 2)
-        self.last_order_frame = self.s.grab()  # きのみの残り個数（このドーナツの分を引いた数）が写っている
+        self.select_berries()
 
         self.p.press("plus", wait=0)
         self.wait_for("cook_dialog", 5)
@@ -258,36 +252,96 @@ class Runner:
                 log.info(f"知らないパワーです（OCR: {p.raw}）")
         hit, uncertain = target.evaluate(readings[0], self.targets.get())
         r = DonutResult(readings[0], hit, uncertain)
-        self.last_result_path = self.last_berries_path = None
+        self.last_result_path = None
         if r.hit or r.uncertain:  # 外れの画面は残さない
             self.last_result_path = self.save(RESULT_DIR, "HIT" if r.hit else "CHECK", frames[0])
-            self.last_berries_path = self.save_berries()
         return r
 
-    def save_berries(self) -> Path | None:
-        """きのみ選択画面から、使ったきのみ（カシブ・ロゼル）の行を切り出して保存する。"""
-        f = self.last_order_frame
-        if f is None:
-            return None
-        rows = [f[y - BERRY_ROW_H // 2 - 18:y + BERRY_ROW_H // 2 - 18, BERRY_ROW_X[0]:BERRY_ROW_X[1]]
-                for _, y, _ in RECIPE_BERRIES]
-        return self.save(RESULT_DIR, "berries", np.vstack(rows))
+    # ---- きのみ選択 ----
+
+    def _tap(self, button: str, times: int) -> None:
+        for _ in range(times):
+            self.p.press(button, hold=BERRY_HOLD, wait=BERRY_GAP)
+
+    def _cursor(self) -> tuple[object, int | None]:
+        """（画面, カーソルが乗っている行の中心 y）。スクロール中で分からなければ y は None。"""
+        time.sleep(BERRY_SETTLE)
+        frame = self.s.grab()
+        return frame, berries.cursor_row(frame)
+
+    def select_berries(self) -> None:
+        """レシピのきのみを選ぶ。選ぶ前と後で残り個数を読み、使う数だけ減ったかを確かめる。"""
+        recipe = self.recipes.get()
+        self.last_recipe = recipe
+        self.last_counts = {}
+        for name, n in recipe.items():
+            frame, y = self.move_cursor_to(name)
+            before = vision.read_count(frame, y)
+            if before is not None and before < n:
+                raise OutOfBerries(f"{name} が足りません（{before} 個、使うのは {n} 個）")
+            self._tap("a", n)
+            frame, y2 = self._cursor()
+            y2 = y2 or y
+            after = vision.read_count(frame, y2)
+            if before is not None and after is not None and before - after != n:
+                raise StepFailed(f"{name} を {n} 個選べませんでした（{before} 個 → {after} 個）")
+            self.last_counts[name] = (after, frame, y2)
+
+    def move_cursor_to(self, name: str) -> tuple[object, int]:
+        """きのみ一覧のカーソルを name に合わせ、（画面, 行の中心 y）を返す。"""
+        for attempt in range(6):
+            frame, y = self._cursor()
+            if y is None:
+                continue
+            text = berries.ocr_name(frame, y)
+            if berries.looks_like(text, name):
+                return frame, y
+            current = berries.identify(text)
+            order = self.berry_list
+            if attempt >= 3 or order is None or current not in order or name not in order:
+                order = self.scan_berry_list()  # 覚えた並びがずれている
+                if name not in order:
+                    raise OutOfBerries(f"{name} が一覧にありません（持っていない）")
+                if current not in order:
+                    continue
+            i, j = order.index(current), order.index(name)
+            down, up = (j - i) % len(order), (i - j) % len(order)
+            self._tap("dpad_down", down) if down <= up else self._tap("dpad_up", up)
+        raise StepFailed(f"{name} にカーソルを合わせられませんでした")
+
+    def scan_berry_list(self) -> list[str]:
+        """きのみ一覧を下へ一周して並びを読み、覚える（終わるとカーソルは元の位置に戻る）。"""
+        log.info("きのみ一覧の並びを読み直します")
+        names: list[str | None] = []
+        for _ in range(120):
+            frame, y = self._cursor()
+            if y is None:
+                frame, y = self._cursor()
+            name = berries.identify(berries.ocr_name(frame, y)) if y else None
+            if len(names) > 1 and name is not None and name == names[0]:
+                break
+            names.append(name)
+            self._tap("dpad_down", 1)
+        else:
+            raise StepFailed("きのみ一覧を一周できませんでした")
+        log.info(f"きのみ一覧: {len(names)} 種類（読めなかった行 {names.count(None)}）")
+        self.berry_list = names
+        berries.save_list(names)
+        return names
 
     def read_berries(self, expected: dict[str, int] | None = None) -> tuple[dict[str, int | None], list[str]]:
-        """直近のきのみ選択画面から、レシピで使うきのみの残り個数（このドーナツの分を引いた数）を読む。
+        """直近の試行で使ったきのみの残り個数（このドーナツの分を引いた数）を返す。
 
         expected（前回の当たりの個数から計算した今回の個数）があれば答え合わせに使う。読めないか合わないときは
         計算した個数を採り、その画面からまだ見本の無い数字（7 など）を覚える。戻り値は（個数, 計算値を採ったきのみ）。
         """
-        f = self.last_order_frame
         counts: dict[str, int | None] = {}
         fixed = []
-        for name, y, _ in RECIPE_BERRIES:
-            n = None if f is None else vision.read_count(f, y)
+        for name, (n, frame, y) in self.last_counts.items():
             want = (expected or {}).get(name)
             if want is not None and n != want:
                 log.info(f"{name} の個数: 読み取り {n} / 計算上 {want} → 計算上の個数を使います")
-                if f is not None and (learned := vision.learn_count(f, y, want)):
+                if learned := vision.learn_count(frame, y, want):
                     log.info(f"数字 {learned} の見本を覚えました")
                 n = want
                 fixed.append(name)
