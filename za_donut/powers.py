@@ -28,7 +28,7 @@ SOUR = {
 }
 # 照らし合わせに使う名前の一覧（サワー以外も、実機で見たものは入れておく）
 CATALOG = ([name for names in SOUR.values() for name in names] + [f"わざパワー：{t}" for t in TYPES]
-           + ["こうげきパワー", "すばやさパワー"])
+           + ["こうげきパワー", "とくこうパワー", "すばやさパワー"])
 # パワー名 → カテゴリ（同じカテゴリのパワーは 1 つのドーナツに 1 つまで）。分かっているサワー系だけ
 CATEGORY = {name: category for category, names in SOUR.items() for name in names}
 
