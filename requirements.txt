@@ -2,3 +2,11 @@ opencv-python>=4.8
 pyserial>=3.5
 pygrabber>=0.2
 discord.py>=2.3
+# パワー名の読み取り（Windows 標準の日本語 OCR）
+winrt-runtime>=3.0
+winrt-Windows.Media.Ocr>=3.0
+winrt-Windows.Globalization>=3.0
+winrt-Windows.Graphics.Imaging>=3.0
+winrt-Windows.Storage.Streams>=3.0
+winrt-Windows.Foundation>=3.0
+winrt-Windows.Foundation.Collections>=3.0

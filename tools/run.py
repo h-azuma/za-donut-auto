@@ -30,6 +30,7 @@ from za_donut.notify import Discord  # noqa: E402
 from za_donut.pico import Pico  # noqa: E402
 from za_donut.runner import ERROR_DIR, RECIPE_BERRIES, Runner, StepFailed  # noqa: E402
 from za_donut.screen import DEFAULT_DEVICE, Screen  # noqa: E402
+from za_donut.target import TargetStore, register_commands  # noqa: E402
 
 LOG_DIR = ROOT / "logs"
 MAX_CONSECUTIVE_FAILURES = 3
@@ -111,7 +112,7 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
             continue
         failures = 0
         elapsed = time.monotonic() - started
-        summary = f"きのみLv.{result.kinomi_lv} どっさりLv.{result.dossari_lv}"
+        summary = result.summary()
         log.info(
             f"#{tries} {summary} → {'当たり' if result.hit else '外れ'}"
             f"（{time.monotonic() - t0:.0f} 秒、累計 {elapsed / 60:.1f} 分）"
@@ -119,7 +120,7 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
         if not (result.hit or result.uncertain):
             continue
 
-        kind = "当たり" if result.hit else "当たりかもしれない結果（数字を読めない行あり）"
+        kind = "当たり" if result.hit else "当たりかもしれない結果（読めないパワーあり）"
         log.info(f"{kind}が出ました。結果画面のままにしてあります。")
         if not discord:
             runner.discard(runner.last_result_path, runner.last_berries_path)
@@ -193,12 +194,15 @@ def main() -> None:
                         format="%(asctime)s %(message)s", handlers=handlers)
     logging.getLogger("discord").setLevel(logging.ERROR)  # 音声機能が無いという警告などは出さない
 
+    targets = TargetStore()
+    log.info(f"狙い: {targets.describe()}")
     discord = None if args.no_discord else Discord.from_config()
     if discord:
+        register_commands(discord, targets)
         discord.start()
     try:
         with Screen(args.device) as screen, Pico() as pico:
-            loop(Runner(pico, screen, keep_screenshots=args.debug), discord, args.max, not args.no_alarm, args.until_out)
+            loop(Runner(pico, screen, targets, keep_screenshots=args.debug), discord, args.max, not args.no_alarm, args.until_out)
     except Exception as e:
         if discord:
             discord.send(f"エラーで停止しました: {e!r}")

@@ -13,6 +13,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 
 import discord
+from discord import app_commands
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class Discord:
         self.channel_id = channel_id
         self.user_id = user_id
         self.client = discord.Client(intents=discord.Intents.default())
+        self.tree = app_commands.CommandTree(self.client)  # スラッシュコマンド（start() の前に登録する）
         self.loop = asyncio.new_event_loop()
         self._ready = threading.Event()
         self.client.event(self.on_ready)
@@ -75,6 +77,14 @@ class Discord:
 
     async def on_ready(self) -> None:
         log.info(f"Discord に接続しました（{self.client.user}）")
+        if self.tree.get_commands():
+            # 報告先チャンネルのサーバーにだけ登録する（全体への登録は反映に時間がかかるため）
+            channel = self.client.get_channel(self.channel_id) or await self.client.fetch_channel(self.channel_id)
+            self.tree.copy_global_to(guild=channel.guild)
+            try:
+                await self.tree.sync(guild=channel.guild)
+            except discord.Forbidden:
+                log.info("スラッシュコマンドを登録できませんでした（Bot の招待時に applications.commands の権限が必要です）")
         self._ready.set()
 
     def _run(self) -> None:

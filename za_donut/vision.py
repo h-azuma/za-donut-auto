@@ -1,9 +1,8 @@
-"""テンプレートマッチングによる画面判定と、結果画面のパワー判定。
+"""テンプレートマッチングによる画面判定と、きのみの残り個数の読み取り。
 
 テンプレートは tools/make_templates.py が SPECS の座標で実機スクショから切り出したもの。
 """
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -43,20 +42,11 @@ SPECS = {
     "result_pluslv":    ("20261017_121755_result_t3.png",               850, 683, 150, 34),
     "result_date":      ("20261017_121755_result_t3.png",               712, 976, 84, 36),
     "result_next":      ("20261017_122909_result_late.png",            1745, 1018, 125, 44),  # 「A つぎへ」＝パワー欄の表示完了
-    # 結果画面のパワー欄（行の間隔は 50px、1 行目の文字は y=832 付近）
-    "power_kinomi":     ("20261017_121755_result_t3.png",               257, 830, 303, 32),  # どうぐパワー：きのみ Lv.
-    "power_dossari":    ("20261017_121755_result_t3.png",               257, 930, 238, 32),  # どっさりパワー：Lv.
-    "digit_3":          ("20261017_121755_result_t3.png",               559, 830, 19, 32),
-    "digit_2":          ("20261017_121755_result_t3.png",               494, 930, 21, 32),
 }
 
 # キャラクターの位置で表示場所が変わるものは画面全体から探す
 SEARCH_FULL = {"door_prompt", "talk_anshya", "talk_prompt", "talk_pc"}
 
-POWER_ROW_TOP = 830
-POWER_ROW_PITCH = 50
-POWER_ROWS = 3
-POWER_X = (240, 800)
 
 _cache: dict[str, np.ndarray] = {}
 
@@ -113,48 +103,6 @@ THRESHOLDS = {
 
 def visible(frame: np.ndarray, name: str, threshold: float | None = None) -> bool:
     return score(frame, name) >= (threshold or THRESHOLDS.get(name, THRESHOLD))
-
-
-UNREADABLE = -1  # パワーはあるがレベルの数字を読めなかった
-
-
-@dataclass(frozen=True)
-class PowerResult:
-    kinomi_lv: int | None   # どうぐパワー：きのみ のレベル（無ければ None、読めなければ UNREADABLE）
-    dossari_lv: int | None  # どっさりパワー のレベル（同上）
-
-    @property
-    def hit(self) -> bool:
-        return self.kinomi_lv in (2, 3) and self.dossari_lv == 3
-
-    @property
-    def uncertain(self) -> bool:
-        """当たりの可能性を否定できない（数字が読めない行がある）。捨てずに人が確認する。"""
-        return not self.hit and self.kinomi_lv in (2, 3, UNREADABLE) and self.dossari_lv in (3, UNREADABLE)
-
-
-def _level_after(band: np.ndarray, x_end: int) -> int:
-    """パワー名の直後にある数字を読む（3 か 2 のみ判別。それ以外は UNREADABLE）。"""
-    digit_area = band[:, max(0, x_end - 6):x_end + 30]
-    s3 = _best(digit_area, template("digit_3"))[0]
-    s2 = _best(digit_area, template("digit_2"))[0]
-    if max(s3, s2) < THRESHOLD:
-        return UNREADABLE
-    return 3 if s3 > s2 else 2
-
-
-def read_powers(frame: np.ndarray) -> PowerResult:
-    """結果画面のパワー欄 3 行から、きのみパワーとどっさりパワーのレベルを読む。"""
-    found: dict[str, int | None] = {"power_kinomi": None, "power_dossari": None}
-    for row in range(POWER_ROWS):
-        top = POWER_ROW_TOP + row * POWER_ROW_PITCH
-        band = frame[top - 8:top + 40, POWER_X[0]:POWER_X[1]]
-        for name in found:
-            tpl = template(name)
-            s, (mx, _) = _best(band, tpl)
-            if s >= THRESHOLD:
-                found[name] = _level_after(band, mx + tpl.shape[1])
-    return PowerResult(found["power_kinomi"], found["power_dossari"])
 
 
 # ---- きのみの残り個数（きのみ選択画面の「×233」など）----

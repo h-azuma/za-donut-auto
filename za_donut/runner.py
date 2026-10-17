@@ -9,13 +9,14 @@ import logging
 import tempfile
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from . import vision
+from . import powers, target, vision
 from .pico import Pico
 from .screen import Screen
 from .steps import MAP_TO_HOTEL
@@ -43,14 +44,25 @@ BERRY_ROW_X = (20, 680)
 PRESENT_A_INTERVAL = 0.3  # 完成場面の A の間隔。完成場面は表示後 1〜1.5 秒は A を受け付けない。結果画面が出た直後の A では閉じない
 
 
+@dataclass(frozen=True)
+class DonutResult:
+    powers: tuple[powers.Power, ...]
+    hit: bool
+    uncertain: bool  # 読めないパワーがあり、当たりの可能性を否定できない
+
+    def summary(self) -> str:
+        return " / ".join(str(p) for p in self.powers) or "（パワーなし）"
+
+
 class StepFailed(Exception):
     """想定した画面にならなかった。"""
 
 
 class Runner:
-    def __init__(self, pico: Pico, screen: Screen, keep_screenshots: bool = True):
+    def __init__(self, pico: Pico, screen: Screen, targets: target.TargetStore, keep_screenshots: bool = True):
         self.p = pico
         self.s = screen
+        self.targets = targets  # 狙うパワー（Discord から途中で変えられる）
         # False のときは画面を一時フォルダに保存する（Discord に送った後で discard() で消す）
         self.keep_screenshots = keep_screenshots
         self.last_result_path: Path | None = None  # 直近の当たり / 要確認の結果画面
@@ -236,17 +248,21 @@ class Runner:
         self.wait_for("result_next", 15)
         time.sleep(0.5)
 
-    def read_result(self) -> vision.PowerResult:
+    def read_result(self) -> DonutResult:
         frames = [self.s.grab() for _ in range(3)]
-        results = [vision.read_powers(f) for f in frames]
-        if len(set(results)) != 1:
-            raise StepFailed(f"パワーの読み取り結果がフレームごとに違います: {results}")
-        r = results[0]
+        readings = [powers.read_powers(f) for f in frames]
+        if len(set(readings)) != 1:
+            raise StepFailed(f"パワーの読み取り結果がフレームごとに違います: {readings}")
+        for p in readings[0]:
+            if p.name is None:
+                log.info(f"知らないパワーです（OCR: {p.raw}）")
+        hit, uncertain = target.evaluate(readings[0], self.targets.get())
+        r = DonutResult(readings[0], hit, uncertain)
         self.last_result_path = self.last_berries_path = None
         if r.hit or r.uncertain:  # 外れの画面は残さない
             self.last_result_path = self.save(RESULT_DIR, "HIT" if r.hit else "CHECK", frames[0])
             self.last_berries_path = self.save_berries()
-        return results[0]
+        return r
 
     def save_berries(self) -> Path | None:
         """きのみ選択画面から、使ったきのみ（カシブ・ロゼル）の行を切り出して保存する。"""
@@ -366,7 +382,7 @@ class Runner:
             time.sleep(0.5)
         return False
 
-    def attempt(self, on_cutscene: Callable[[], bool] | None = None) -> vision.PowerResult:
+    def attempt(self, on_cutscene: Callable[[], bool] | None = None) -> DonutResult:
         """1 回分。途中で昼夜の切り替わりの演出が入ったら、終わるのを待ってホテルZ への移動からやり直す。
 
         on_cutscene は演出の後に呼ばれ、True を返すとその場でバックアップを取り直す
