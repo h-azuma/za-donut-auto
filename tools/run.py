@@ -17,6 +17,7 @@ discord.json が無いとき（または --no-discord）は、結果画面のま
 """
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -36,6 +37,7 @@ from za_donut.screen import DEFAULT_DEVICE, Screen  # noqa: E402
 from za_donut.target import TargetStore, register_commands  # noqa: E402
 
 LOG_DIR = ROOT / "logs"
+COUNTS_PATH = ROOT / "berry_counts.json"  # 直前の当たりのときのきのみの残り個数（git には入れない）
 MAX_CONSECUTIVE_FAILURES = 3
 CUTSCENE_ASK_MINUTES = 10
 
@@ -68,7 +70,8 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
     started = time.monotonic()
     tries = failures = 0
     # until_out: 「きのみがなくなるまで続ける」。True ならバックアップ後に聞かず、きのみが足りなくなったら止まる
-    last_berries: dict[str, int] = {}  # 直前の当たりのときのきのみの残り個数（次の当たりの答え合わせ用）
+    # 直前の当たりのときのきのみの残り個数（次の当たりの答え合わせ用）。再起動しても忘れないようにファイルにも残す
+    last_berries: dict[str, int] = json.loads(COUNTS_PATH.read_text(encoding="utf-8")) if COUNTS_PATH.exists() else {}
 
     def send(text: str, images: list[Path | None]) -> None:
         """Discord に送り、送った画面は（デバッグモードでなければ）消す。"""
@@ -158,7 +161,8 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
         recipe = runner.last_recipe
         expected = {name: last_berries[name] - need for name, need in recipe.items() if name in last_berries}
         berries, fixed = runner.read_berries(expected)
-        last_berries = {name: n for name, n in berries.items() if n is not None}
+        last_berries = {**last_berries, **{name: n for name, n in berries.items() if n is not None}}
+        COUNTS_PATH.write_text(json.dumps(last_berries, ensure_ascii=False) + "\n", encoding="utf-8")
         left, berry_text = berries_left(berries, recipe)
         if fixed:
             berry_text += f"\n（{'・'.join(fixed)} は読み取りが合わなかったため、前回の個数から計算しました）"
