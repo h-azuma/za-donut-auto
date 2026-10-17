@@ -34,7 +34,7 @@ WALK_TO_COUNTER_UP = (0.0, 1.0, 2.3)     # ロビー入口 → カウンター�
 WALK_TO_COUNTER_LAST = (-1.0, 0.0)       # → 「アンシャ」が見えるまでこの向きに歩く
 BERRY_HOLD = 0.04   # きのみ選択の 1 入力（0.03/0.04 でも取りこぼしなし。余裕を持たせた値）
 BERRY_GAP = 0.06
-BERRY_SETTLE = 0.4  # カーソル移動・選択の後、画面が落ち着くまで
+BERRY_SETTLE = 0.3  # カーソル移動・選択の後、画面が落ち着くまで
 COOK_SKIP_INTERVAL = 0.5  # 調理の演出を飛ばす A の間隔
 CUTSCENE_TIMEOUT = 75  # 昼夜の切り替わりの演出は 1 分弱。パーティ欄が戻った時点で待つのをやめる（これは上限）
 PRESENT_A_INTERVAL = 0.3  # 完成場面の A の間隔。完成場面は表示後 1〜1.5 秒は A を受け付けない。結果画面が出た直後の A では閉じない
@@ -66,6 +66,7 @@ class Runner:
         self.targets = targets  # 狙うパワー（Discord から途中で変えられる）
         self.recipes = recipes  # 使うきのみ（同上）
         self.berry_list = berries.load_list()  # きのみ一覧の並び（ずれていたら読み直す）
+        self.cursor_index: int | None = None   # きのみ一覧でカーソルがある位置（berry_list の何番目か）
         # False のときは画面を一時フォルダに保存する（Discord に送った後で discard() で消す）
         self.keep_screenshots = keep_screenshots
         self.last_result_path: Path | None = None  # 直近の当たり / 要確認の結果画面
@@ -270,11 +271,17 @@ class Runner:
         return frame, berries.cursor_row(frame)
 
     def select_berries(self) -> None:
-        """レシピのきのみを選ぶ。選ぶ前と後で残り個数を読み、使う数だけ減ったかを確かめる。"""
+        """レシピのきのみを選ぶ。選ぶ前と後で残り個数を読み、使う数だけ減ったかを確かめる。
+
+        きのみ選択画面を開いた直後のカーソルは一覧の一番上にあり、選んだ後はそのきのみの上に残るので、
+        カーソルの位置は読まずに覚えておき、覚えた並びの何番目かで近いほうへ動かす。
+        """
         recipe = self.recipes.get()
         self.last_recipe = recipe
         self.last_counts = {}
-        for name, n in recipe.items():
+        self.cursor_index = 0
+        for name in self._selection_order(recipe):
+            n = recipe[name]
             frame, y = self.move_cursor_to(name)
             before = vision.read_count(frame, y)
             if before is not None and before < n:
@@ -287,14 +294,48 @@ class Runner:
                 raise StepFailed(f"{name} を {n} 個選べませんでした（{before} 個 → {after} 個）")
             self.last_counts[name] = (after, frame, y2)
 
+    def _selection_order(self, recipe: berries.Recipe) -> list[str]:
+        """カーソルから近い順に並べる（並びを覚えていなければ書いた順）。"""
+        order = self.berry_list
+        if not order or any(name not in order for name in recipe):
+            return list(recipe)
+        result, pos, rest = [], self.cursor_index or 0, list(recipe)
+        while rest:
+            name = min(rest, key=lambda b: self._distance(pos, order.index(b), len(order)))
+            result.append(name)
+            rest.remove(name)
+            pos = order.index(name)
+        return result
+
+    @staticmethod
+    def _distance(i: int, j: int, n: int) -> int:
+        return min((j - i) % n, (i - j) % n)  # 一覧は端でつながっている
+
+    def _move(self, i: int, j: int, n: int) -> None:
+        down, up = (j - i) % n, (i - j) % n
+        self._tap("dpad_down", down) if down <= up else self._tap("dpad_up", up)
+
     def move_cursor_to(self, name: str) -> tuple[object, int]:
         """きのみ一覧のカーソルを name に合わせ、（画面, 行の中心 y）を返す。"""
+        order = self.berry_list
+        if order and name in order and self.cursor_index is not None:
+            # 覚えた位置から動かし、着いた先の名前だけ確かめる
+            j = order.index(name)
+            self._move(self.cursor_index, j, len(order))
+            frame, y = self._cursor()
+            if y is not None and berries.looks_like(berries.ocr_name(frame, y), name):
+                self.cursor_index = j
+                return frame, y
+            log.info(f"{name} の位置がずれていたので、カーソルの行を読んで合わせ直します")
+        self.cursor_index = None
         for attempt in range(6):
             frame, y = self._cursor()
             if y is None:
                 continue
             text = berries.ocr_name(frame, y)
             if berries.looks_like(text, name):
+                if self.berry_list and name in self.berry_list:
+                    self.cursor_index = self.berry_list.index(name)
                 return frame, y
             current = berries.identify(text)
             order = self.berry_list
@@ -304,9 +345,7 @@ class Runner:
                     raise OutOfBerries(f"{name} が一覧にありません（持っていない）")
                 if current not in order:
                     continue
-            i, j = order.index(current), order.index(name)
-            down, up = (j - i) % len(order), (i - j) % len(order)
-            self._tap("dpad_down", down) if down <= up else self._tap("dpad_up", up)
+            self._move(order.index(current), order.index(name), len(order))
         raise StepFailed(f"{name} にカーソルを合わせられませんでした")
 
     def scan_berry_list(self) -> list[str]:

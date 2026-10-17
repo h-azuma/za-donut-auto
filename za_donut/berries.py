@@ -4,9 +4,10 @@
 一度端から端まで読んで並びを覚え（berry_list.json）、ずれていたら読み直す。
 カーソルが乗っている行の名前は OCR で読み、BERRIES の名前に当てはめる。
 
-recipe.json の形:
+recipe.json の形（どちらか）:
+    {"preset": "サワー系"}
     {"berries": {"いじげんロゼル": 6, "いじげんカシブ": 2}}
-書いた順に選ぶ。厳選の途中でも Discord のコマンド（register_commands）で変えられる。
+選ぶ順番は、カーソルから近い順に自動で決める。厳選の途中でも Discord のコマンド（register_commands）で変えられる。
 """
 
 import difflib
@@ -25,7 +26,11 @@ log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
 RECIPE_PATH = ROOT / "recipe.json"
 LIST_PATH = ROOT / "berry_list.json"  # 覚えた一覧の並び（持っている数で変わるので git には入れない）
-DEFAULT_RECIPE = {"いじげんロゼル": 6, "いじげんカシブ": 2}
+PRESETS = {
+    "サワー系": {"いじげんカシブ": 2, "いじげんロゼル": 6},    # どうぐパワー・どっさりパワー・メガパワー
+    "スイート系": {"いじげんタンガ": 2, "いじげんハバン": 6},  # かがやきパワーなど
+}
+DEFAULT_PRESET = "サワー系"
 MAX_BERRIES = 8
 
 BASE = ["クラボ", "カゴ", "モモン", "チーゴ", "ナナシ", "オレン", "キー", "ラム", "オボン", "ザロク", "ネコブ", "タポル",
@@ -112,7 +117,9 @@ def validate(recipe: Recipe) -> None:
 
 
 def describe(recipe: Recipe) -> str:
-    return " ＋ ".join(f"{name} ×{n}" for name, n in recipe.items())
+    text = " ＋ ".join(f"{name} ×{n}" for name, n in recipe.items())
+    preset = next((p for p, r in PRESETS.items() if r == recipe), None)
+    return f"{preset}（{text}）" if preset else text
 
 
 class RecipeStore:
@@ -121,11 +128,14 @@ class RecipeStore:
     def __init__(self, path: Path = RECIPE_PATH):
         self.path = path
         self._lock = threading.Lock()
-        if path.exists():
-            recipe = json.loads(path.read_text(encoding="utf-8"))["berries"]
-            validate(recipe)
+        config = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"preset": DEFAULT_PRESET}
+        if "preset" in config:
+            if config["preset"] not in PRESETS:
+                raise ValueError(f"知らないプリセットです: {config['preset']}（{' / '.join(PRESETS)}）")
+            recipe = dict(PRESETS[config["preset"]])
         else:
-            recipe = dict(DEFAULT_RECIPE)
+            recipe = config["berries"]
+        validate(recipe)
         self._recipe = recipe
 
     def get(self) -> Recipe:
@@ -134,17 +144,18 @@ class RecipeStore:
 
     def set(self, recipe: Recipe) -> None:
         validate(recipe)
+        preset = next((p for p, r in PRESETS.items() if r == recipe), None)
         with self._lock:
             self._recipe = dict(recipe)
-            self.path.write_text(json.dumps({"berries": self._recipe}, ensure_ascii=False, indent=2) + "\n",
-                                 encoding="utf-8")
+            config = {"preset": preset} if preset else {"berries": self._recipe}
+            self.path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     def describe(self) -> str:
         return describe(self.get())
 
 
 def register_commands(discord, store: RecipeStore) -> None:
-    """Discord に /recipe_show・/recipe_set を登録する（使えるのは discord.json の本人だけ）。"""
+    """Discord に /recipe_show・/recipe_preset・/recipe_set を登録する（使えるのは discord.json の本人だけ）。"""
     from discord import Interaction, app_commands
 
     tree = discord.tree
@@ -159,19 +170,10 @@ def register_commands(discord, store: RecipeStore) -> None:
     async def recipe_show(interaction: Interaction) -> None:
         await interaction.response.send_message(f"今のレシピ: {store.describe()}")
 
-    @tree.command(name="recipe_set", description="レシピ（使うきのみと個数、合わせて 8 個まで）を変える")
-    @app_commands.describe(berry1="きのみ", count1="個数", berry2="きのみ（任意）", count2="個数",
-                           berry3="きのみ（任意）", count3="個数", berry4="きのみ（任意）", count4="個数")
-    @app_commands.autocomplete(berry1=autocomplete, berry2=autocomplete, berry3=autocomplete, berry4=autocomplete)
-    async def recipe_set(interaction: Interaction, berry1: str, count1: count,
-                         berry2: str | None = None, count2: count | None = None,
-                         berry3: str | None = None, count3: count | None = None,
-                         berry4: str | None = None, count4: count | None = None) -> None:
+    async def apply(interaction: Interaction, recipe: Recipe) -> None:
         if interaction.user.id != discord.user_id:
             await interaction.response.send_message("このコマンドは使えません。", ephemeral=True)
             return
-        recipe = {name: n for name, n in ((berry1, count1), (berry2, count2), (berry3, count3), (berry4, count4))
-                  if name and n}
         try:
             store.set(recipe)
         except ValueError as e:
@@ -179,3 +181,22 @@ def register_commands(discord, store: RecipeStore) -> None:
             return
         log.info(f"Discord からレシピを変更しました: {store.describe()}")
         await interaction.response.send_message(f"レシピを変更しました（次の試行から）: {store.describe()}")
+
+    @tree.command(name="recipe_preset", description="レシピをプリセットから選ぶ")
+    @app_commands.describe(preset="プリセット")
+    @app_commands.choices(preset=[app_commands.Choice(name=f"{p}（{describe(r).split('（', 1)[1]}", value=p)
+                                  for p, r in PRESETS.items()])
+    async def recipe_preset(interaction: Interaction, preset: str) -> None:
+        await apply(interaction, dict(PRESETS[preset]))
+
+    @tree.command(name="recipe_set", description="レシピ（使うきのみと個数、合わせて 8 個まで）を自由に決める")
+    @app_commands.describe(berry1="きのみ", count1="個数", berry2="きのみ（任意）", count2="個数",
+                           berry3="きのみ（任意）", count3="個数", berry4="きのみ（任意）", count4="個数")
+    @app_commands.autocomplete(berry1=autocomplete, berry2=autocomplete, berry3=autocomplete, berry4=autocomplete)
+    async def recipe_set(interaction: Interaction, berry1: str, count1: count,
+                         berry2: str | None = None, count2: count | None = None,
+                         berry3: str | None = None, count3: count | None = None,
+                         berry4: str | None = None, count4: count | None = None) -> None:
+        recipe = {name: n for name, n in ((berry1, count1), (berry2, count2), (berry3, count3), (berry4, count4))
+                  if name and n}
+        await apply(interaction, recipe)
