@@ -287,9 +287,15 @@ class Runner:
             if before is not None and before < n:
                 raise OutOfBerries(f"{name} が足りません（{before} 個、使うのは {n} 個）")
             self._tap("a", n)
-            frame, y2 = self._cursor()
-            y2 = y2 or y
-            after = vision.read_count(frame, y2)
+            frame, y2, after = self._count_after(y)
+            if before is not None and after is not None and before - after < n:
+                # 読むのが早すぎたか、A を取りこぼした。少し待って読み直し、それでも足りなければ押し足す
+                time.sleep(0.5)
+                frame, y2, after = self._count_after(y)
+                if after is not None and 0 <= before - after < n:
+                    log.info(f"{name} が {before - after} 個しか選べていないので、{n - (before - after)} 個押し足します")
+                    self._tap("a", n - (before - after))
+                    frame, y2, after = self._count_after(y)
             if before is not None and after is not None and before - after != n:
                 raise StepFailed(f"{name} を {n} 個選べませんでした（{before} 個 → {after} 個）")
             self.last_counts[name] = (after, frame, y2)
@@ -314,6 +320,12 @@ class Runner:
     def _move(self, i: int, j: int, n: int) -> None:
         down, up = (j - i) % n, (i - j) % n
         self._tap("dpad_down", down) if down <= up else self._tap("dpad_up", up)
+
+    def _count_after(self, y: int) -> tuple[object, int, int | None]:
+        """（画面, 行の中心 y, カーソルの行の残り個数）"""
+        frame, y2 = self._cursor()
+        y2 = y2 or y
+        return frame, y2, vision.read_count(frame, y2)
 
     def move_cursor_to(self, name: str) -> tuple[object, int]:
         """きのみ一覧のカーソルを name に合わせ、（画面, 行の中心 y）を返す。"""
