@@ -10,10 +10,13 @@ targets の 1 つ 1 つが「この組み合わせがすべてそろえば当た
 """
 
 import json
+import logging
 import threading
 from pathlib import Path
 
 from .powers import CATALOG, SOUR, Power
+
+log = logging.getLogger(__name__)
 
 TARGET_PATH = Path(__file__).resolve().parent.parent / "target.json"
 DEFAULT = [{"どうぐパワー：きのみ": 2, "どっさりパワー": 3}]
@@ -137,6 +140,7 @@ def register_commands(discord, store: TargetStore) -> None:
         except ValueError as e:
             await interaction.response.send_message(str(e), ephemeral=True)
             return
+        log.info(f"Discord から狙いを変更しました: {store.describe()}")
         await interaction.response.send_message(f"狙いを変更しました（次の試行から）:\n{store.describe()}")
 
     @tree.command(name="target_set", description="狙いをこの組み合わせに置き換える（すべてそろったら当たり）")
