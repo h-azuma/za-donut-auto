@@ -3,7 +3,7 @@
 Switch 2 版『Pokémon LEGENDS Z-A』（DLC）のドーナツ厳選を自動化するツール。
 
 <p align="center">
-  <img src="docs/images/07_result.jpg" width="560" alt="当たりのドーナツの結果画面（どうぐパワー：きのみ Lv.3 / どっさりパワー Lv.2）">
+  <img src="docs/images/07_result.jpg" width="560" alt="ドーナツの結果画面（パワー欄にどうぐパワー：きのみ Lv.3 などが並ぶ）">
 </p>
 
 - ドーナツを作ってパワーを読み取り、外れならバックアップから読み込み直して作り直す
