@@ -23,7 +23,7 @@ Bot は PC から Discord へ接続しに行くので、ルーターのポート
 
 ## 4. 設定ファイルを作る
 
-`discord.example.json` をコピーして `discord.json` を作り、3 つの値を書き換える（`discord.json` は .gitignore 済み）。
+`config/discord.example.json` をコピーして `config/discord.json` を作り、3 つの値を書き換える（`config/discord.json` は .gitignore 済み）。
 
 ```json
 {

@@ -88,7 +88,7 @@ Switch 2 ──HDMI──▶ キャプチャボード ──▶ OBS（仮想カ�
 
 カーソルが乗っている行（明るい行）の名前を OCR で読み、残り個数は数字の見本と照合して読む（<img src="docs/images/berry_count.png" height="22" alt="×233">）。
 
-一覧には持っているきのみだけが並ぶので、並び順は持っている数で変わる。最初に一度、一覧を端から端まで読んで並びを覚え（`berry_list.json`、30 秒ほど）、2 回目からは覚えた並びの何番目かで近いほう（上から・下から）へカーソルを動かす。着いた先で名前を確かめ、選ぶ前と後で残り個数が使う数だけ減ったかを確かめる。
+一覧には持っているきのみだけが並ぶので、並び順は持っている数で変わる。最初に一度、一覧を端から端まで読んで並びを覚え（`state/berry_list.json`、30 秒ほど）、2 回目からは覚えた並びの何番目かで近いほう（上から・下から）へカーソルを動かす。着いた先で名前を確かめ、選ぶ前と後で残り個数が使う数だけ減ったかを確かめる。
 
 ## 必要なもの・セットアップ
 
@@ -104,7 +104,7 @@ pip install -r requirements.txt
 
 1. Pico W を PC に USB で挿し、Switch の「コントローラー」→「持ちかた/順番を変える」でプロコンとして接続する。
 2. OBS でキャプチャボードの映像を出し、「仮想カメラ開始」を押す。
-3. Discord で通知を受けるなら、[docs/discord-setup.md](docs/discord-setup.md) の手順で `discord.json` を作り、`python tools/discord_test.py` で確認する。
+3. Discord で通知を受けるなら、[docs/discord-setup.md](docs/discord-setup.md) の手順で `config/discord.json` を作り、`python tools/discord_test.py` で確認する。
 4. ポケモンセンター：ベールでバックアップを取っておく（試行のたびにここから読み込み直す）。
 
 ## 使い方
@@ -119,13 +119,13 @@ python tools/run.py --device "OBS Virtual Camera"
 |---|---|
 | `--max N` | N 回試行したら終わる（既定は無制限） |
 | `--until-out` | 最初から「きのみがなくなるまで続ける」で動かす |
-| `--no-discord` | `discord.json` があっても Discord を使わない |
+| `--no-discord` | `config/discord.json` があっても Discord を使わない |
 | `--no-alarm` | Discord を使わないとき、当たりや停止でアラームを鳴らさない |
 | `--debug` | ログファイルを `logs/` に、画面を `screenshots/` に残す（通常は何も残さない） |
 
 ## レシピと狙いの設定
 
-### レシピ（使うきのみ）: `recipe.json`
+### レシピ（使うきのみ）: `config/recipe.json`
 
 プリセット名か、使うきのみと個数（合わせて 8 個まで。名前は「のみ」を除いたもの）を書く。選ぶ順番は自動で決める。
 
@@ -142,7 +142,7 @@ python tools/run.py --device "OBS Virtual Camera"
 | サワー系 | いじげんカシブ ×2 ＋ いじげんロゼル ×6 | どうぐ・どっさり・メガ |
 | スイート系 | いじげんタンガ ×2 ＋ いじげんハバン ×6 | かがやきなど |
 
-### 狙うパワー: `target.json`
+### 狙うパワー: `config/target.json`
 
 「この組み合わせがそろえば当たり」を、パワー名と最低レベルで書く。複数書けば、どれか 1 つがそろえば当たり。
 
@@ -164,7 +164,7 @@ python tools/run.py --device "OBS Virtual Camera"
 
 ### 厳選の途中で変える（Discord）
 
-報告先のチャンネルでスラッシュコマンドを使う。次の試行から使われ、`recipe.json` / `target.json` にも保存される。使えるのは `discord.json` に登録した本人だけ。
+報告先のチャンネルでスラッシュコマンドを使う。次の試行から使われ、`config/recipe.json` / `config/target.json` にも保存される。使えるのは `config/discord.json` に登録した本人だけ。
 
 | コマンド | 内容 |
 |---|---|
@@ -205,6 +205,7 @@ za_donut/
   berries.py    きのみの一覧とレシピの設定、きのみ選択画面の読み取り、Discord のコマンド
   runner.py     手順の各段階（起動、移動、きのみ選択、作成、バックアップ）
   notify.py     Discord への通知とボタンの受け取り
+  paths.py      設定ファイル・記録ファイルの置き場所
   steps.py      調整用の値と、1 ステップずつ試すための操作
 tools/
   run.py                自動厳選の本体
@@ -214,6 +215,8 @@ tools/
   capture.py            キャプチャのプレビューとスクショ保存
   pico_console.py       Pico に手でコマンドを送るコンソール
   discord_test.py       Discord の接続テスト
+config/         設定（recipe.json・target.json・discord.json）。discord.json は git 管理外
+state/          プログラムが書く記録（きのみ一覧の並び、前回の残り個数）。git 管理外
 templates/      画面判定用のテンプレート画像
 docs/           ファームウェアのビルド手順、Discord の設定手順、README の画像
 ```

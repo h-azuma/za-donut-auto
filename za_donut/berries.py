@@ -1,10 +1,10 @@
 """きのみの一覧と、レシピ（どのきのみを何個使うか）の設定、きのみ選択画面での読み取り。
 
 きのみ選択画面の一覧は、持っているきのみだけが並ぶ（0 個のものは出ない）ので、並び順は決め打ちできない。
-一度端から端まで読んで並びを覚え（berry_list.json）、ずれていたら読み直す。
+一度端から端まで読んで並びを覚え（state/berry_list.json）、ずれていたら読み直す。
 カーソルが乗っている行の名前は OCR で読み、BERRIES の名前に当てはめる。
 
-recipe.json の形（どちらか）:
+config/recipe.json の形（どちらか）:
     {"preset": "サワー系"}
     {"berries": {"いじげんロゼル": 6, "いじげんカシブ": 2}}
 選ぶ順番は、カーソルから近い順に自動で決める。厳選の途中でも Discord のコマンド（register_commands）で変えられる。
@@ -19,13 +19,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from . import paths
 from .powers import _base, _ocr
 
 log = logging.getLogger(__name__)
 
-ROOT = Path(__file__).resolve().parent.parent
-RECIPE_PATH = ROOT / "recipe.json"
-LIST_PATH = ROOT / "berry_list.json"  # 覚えた一覧の並び（持っている数で変わるので git には入れない）
 PRESETS = {
     "サワー系": {"いじげんカシブ": 2, "いじげんロゼル": 6},    # どうぐパワー・どっさりパワー・メガパワー
     "スイート系": {"いじげんタンガ": 2, "いじげんハバン": 6},  # かがやきパワーなど
@@ -90,13 +88,13 @@ def looks_like(text: str, name: str) -> bool:
 
 
 def load_list() -> list[str] | None:
-    if LIST_PATH.exists():
-        return json.loads(LIST_PATH.read_text(encoding="utf-8"))
+    if paths.BERRY_LIST.exists():
+        return json.loads(paths.BERRY_LIST.read_text(encoding="utf-8"))
     return None
 
 
 def save_list(names: list[str]) -> None:
-    LIST_PATH.write_text(json.dumps(names, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    paths.write_state(paths.BERRY_LIST, json.dumps(names, ensure_ascii=False, indent=1) + "\n")
 
 
 # ---- レシピの設定 ----
@@ -125,7 +123,7 @@ def describe(recipe: Recipe) -> str:
 class RecipeStore:
     """レシピの設定。厳選のループと Discord のコマンド（別スレッド）の両方から使う。"""
 
-    def __init__(self, path: Path = RECIPE_PATH):
+    def __init__(self, path: Path = paths.RECIPE):
         self.path = path
         self._lock = threading.Lock()
         config = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"preset": DEFAULT_PRESET}

@@ -1,7 +1,7 @@
 """Discord への報告と、ボタンでの返事の受け取り。
 
 Bot は別スレッドで動かし、厳選ループからは ask() / send() を同期的に呼ぶ。
-設定は discord.json（docs/discord-setup.md 参照）。
+設定は config/discord.json（docs/discord-setup.md 参照）。
 """
 
 import asyncio
@@ -15,9 +15,11 @@ from pathlib import Path
 import discord
 from discord import app_commands
 
+from . import paths
+
 log = logging.getLogger(__name__)
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "discord.json"
+CONFIG_PATH = paths.DISCORD
 
 Images = Path | list[Path | None] | None  # 添付する画像（複数可。None は無視）
 
@@ -97,7 +99,7 @@ class Discord:
     def start(self, timeout: float = 30) -> None:
         self._thread.start()
         if not self._ready.wait(timeout):
-            raise RuntimeError("Discord に接続できませんでした。discord.json のトークンを確認してください。")
+            raise RuntimeError("Discord に接続できませんでした。config/discord.json のトークンを確認してください。")
 
     def close(self) -> None:
         # close() が終わると start() も終わってループが止まるので、close() の完了ではなくスレッドの終了を待つ

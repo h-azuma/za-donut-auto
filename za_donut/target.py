@@ -1,4 +1,4 @@
-"""狙うパワーの設定（target.json）と、当たりの判定。
+"""狙うパワーの設定（config/target.json）と、当たりの判定。
 
 target.json の形:
     {"targets": [{"どうぐパワー：きのみ": 2, "どっさりパワー": 3}]}
@@ -14,11 +14,11 @@ import logging
 import threading
 from pathlib import Path
 
+from . import paths
 from .powers import CATALOG, CATEGORY, SOUR, Power
 
 log = logging.getLogger(__name__)
 
-TARGET_PATH = Path(__file__).resolve().parent.parent / "target.json"
 DEFAULT = [{"どうぐパワー：きのみ": 2, "どっさりパワー": 3}]
 
 Combo = dict[str, int]
@@ -27,7 +27,7 @@ Combo = dict[str, int]
 class TargetStore:
     """狙いの設定。厳選のループと Discord のコマンド（別スレッド）の両方から使う。"""
 
-    def __init__(self, path: Path = TARGET_PATH):
+    def __init__(self, path: Path = paths.TARGET):
         self.path = path
         self._lock = threading.Lock()
         self._targets = self._load()

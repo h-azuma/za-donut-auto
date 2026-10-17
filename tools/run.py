@@ -4,7 +4,7 @@
 読めないパワーがあって判定できないときは、Discord で「バックアップする / 捨てて続ける / 止める」を聞く。
 バックアップが終わったら「続ける / きのみがなくなるまで続ける / 止める」をボタンで聞く。
 「きのみがなくなるまで続ける」を選ぶと以後は聞かず、レシピのきのみが 1 個分を下回ったところで止まる。
-discord.json が無いとき（または --no-discord）は、結果画面のままアラーム音を鳴らして停止する。
+config/discord.json が無いとき（または --no-discord）は、結果画面のままアラーム音を鳴らして停止する。
 
 通常は手元に何も残さない（ログは画面に出すだけ。Discord に送った画面は送った後で消す）。
 --debug を付けると、logs/ にログファイル（所要時間などの詳細も）を、screenshots/ に画面を残す。
@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from za_donut.notify import Discord  # noqa: E402
 from za_donut.pico import Pico  # noqa: E402
+from za_donut import paths  # noqa: E402
 from za_donut.berries import RecipeStore  # noqa: E402
 from za_donut.berries import register_commands as register_recipe_commands  # noqa: E402
 from za_donut.runner import ERROR_DIR, OutOfBerries, Runner, StepFailed  # noqa: E402
@@ -37,7 +38,6 @@ from za_donut.screen import DEFAULT_DEVICE, Screen  # noqa: E402
 from za_donut.target import TargetStore, register_commands  # noqa: E402
 
 LOG_DIR = ROOT / "logs"
-COUNTS_PATH = ROOT / "berry_counts.json"  # 直前の当たりのときのきのみの残り個数（git には入れない）
 MAX_CONSECUTIVE_FAILURES = 3
 CUTSCENE_ASK_MINUTES = 10
 
@@ -71,7 +71,8 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
     tries = failures = 0
     # until_out: 「きのみがなくなるまで続ける」。True ならバックアップ後に聞かず、きのみが足りなくなったら止まる
     # 直前の当たりのときのきのみの残り個数（次の当たりの答え合わせ用）。再起動しても忘れないようにファイルにも残す
-    last_berries: dict[str, int] = json.loads(COUNTS_PATH.read_text(encoding="utf-8")) if COUNTS_PATH.exists() else {}
+    counts_path = paths.BERRY_COUNTS
+    last_berries: dict[str, int] = json.loads(counts_path.read_text(encoding="utf-8")) if counts_path.exists() else {}
 
     def send(text: str, images: list[Path | None]) -> None:
         """Discord に送り、送った画面は（デバッグモードでなければ）消す。"""
@@ -162,7 +163,7 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
         expected = {name: last_berries[name] - need for name, need in recipe.items() if name in last_berries}
         berries, fixed = runner.read_berries(expected)
         last_berries = {**last_berries, **{name: n for name, n in berries.items() if n is not None}}
-        COUNTS_PATH.write_text(json.dumps(last_berries, ensure_ascii=False) + "\n", encoding="utf-8")
+        paths.write_state(counts_path, json.dumps(last_berries, ensure_ascii=False) + "\n")
         left, berry_text = berries_left(berries, recipe)
         if fixed:
             berry_text += f"\n（{'・'.join(fixed)} は読み取りが合わなかったため、前回の個数から計算しました）"
@@ -202,7 +203,7 @@ def main() -> None:
     parser.add_argument("--device", default=DEFAULT_DEVICE, help='OBS 経由なら "OBS Virtual Camera"')
     parser.add_argument("--max", type=int, default=0, help="最大試行回数（0 は無制限）")
     parser.add_argument("--no-alarm", action="store_true")
-    parser.add_argument("--no-discord", action="store_true", help="discord.json があっても Discord を使わない")
+    parser.add_argument("--no-discord", action="store_true", help="config/discord.json があっても Discord を使わない")
     parser.add_argument("--until-out", action="store_true",
                         help="最初から「きのみがなくなるまで続ける」で動かす（バックアップ後に聞かない）")
     parser.add_argument("--debug", action="store_true",

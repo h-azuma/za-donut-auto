@@ -1,6 +1,5 @@
 screenshots/
 logs/
 __pycache__/
-discord.json
-berry_list.json
-berry_counts.json
+config/discord.json
+state/
