@@ -1,6 +1,7 @@
 """ドーナツ厳選を自動で繰り返す。
 
-当たり（または要確認）が出たら Discord に結果画面を送り、そのままポケモンセンターで回復してバックアップする。
+当たりが出たら Discord に結果画面を送り、そのままポケモンセンターで回復してバックアップする。
+読めないパワーがあって判定できないときは、Discord で「バックアップする / 捨てて続ける / 止める」を聞く。
 バックアップが終わったら「続ける / きのみがなくなるまで続ける / 止める」をボタンで聞く。
 「きのみがなくなるまで続ける」を選ぶと以後は聞かず、レシピのきのみが 1 個分を下回ったところで止まる。
 discord.json が無いとき（または --no-discord）は、結果画面のままアラーム音を鳴らして停止する。
@@ -133,8 +134,27 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
                 alarm(f"{kind}！ 画面を確認してください。Ctrl+C でアラームを止めます。")
             return
 
-        # 当たりを捨てることはないので、確認せずにそのままバックアップする。
-        # 要確認の結果もバックアップしておけば失うものはない（止めるかどうかは完了後に聞く）
+        if result.hit:
+            # 当たりを捨てることはないので、確認せずにそのままバックアップする
+            send(f"**{kind}**！ {summary}（{tries} 回目、{elapsed / 60:.0f} 分）\nバックアップを取りに行きます。",
+                 [runner.last_result_path])
+        else:
+            # 判定できないときは人が決める。外れをバックアップすると、そのドーナツの分のきのみが本当に減ってしまう
+            choice = discord.ask(
+                f"**判定できない結果です**: {summary}（{tries} 回目）\n"
+                "読めないパワーがあり、当たりかどうか判定できませんでした。画面を見て選んでください。\n"
+                "（バックアップすると、このドーナツの分のきのみが減ります）",
+                [("backup", "バックアップする", "primary"), ("discard", "捨てて続ける", "secondary"),
+                 ("stop", "止める", "danger")],
+                [runner.last_result_path],
+            )
+            runner.discard(runner.last_result_path)
+            log.info(f"Discord の返事（判定できない結果）: {choice}")
+            if choice == "stop":
+                return
+            if choice == "discard":
+                continue
+
         recipe = runner.last_recipe
         expected = {name: last_berries[name] - need for name, need in recipe.items() if name in last_berries}
         berries, fixed = runner.read_berries(expected)
@@ -144,9 +164,6 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
             berry_text += f"\n（{'・'.join(fixed)} は読み取りが合わなかったため、前回の個数から計算しました）"
         unread = left is None
         log.info(berry_text)
-        # きのみの残り個数はバックアップ後の通知でだけ伝える
-        send(f"**{kind}**！ {summary}（{tries} 回目、{elapsed / 60:.0f} 分）\nバックアップを取りに行きます。",
-             [runner.last_result_path])
         try:
             done = runner.backup()
         except StepFailed as e:
