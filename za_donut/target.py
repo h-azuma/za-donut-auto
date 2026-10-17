@@ -14,7 +14,7 @@ import logging
 import threading
 from pathlib import Path
 
-from .powers import CATALOG, SOUR, Power
+from .powers import CATALOG, CATEGORY, SOUR, Power
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +81,8 @@ def evaluate(powers: tuple[Power, ...], targets: list[Combo]) -> tuple[bool, boo
     """
     known = {p.name: p.level for p in powers if p.name is not None}
     unknown_rows = sum(1 for p in powers if p.name is None)
+    # 同じカテゴリのパワーは 1 つまでなので、別のパワーで埋まっているカテゴリの狙いは満たせない
+    taken = {CATEGORY[name] for name in known if name in CATEGORY}
     hit = False
     maybe = False
     for combo in targets:
@@ -93,6 +95,9 @@ def evaluate(powers: tuple[Power, ...], targets: list[Combo]) -> tuple[bool, boo
             if name in known:
                 if known[name] is None or known[name] >= lv:
                     continue  # レベルが読めていないだけなら満たしている可能性がある
+                possible = False
+                break
+            if CATEGORY.get(name) in taken:
                 possible = False
                 break
             if spare:
