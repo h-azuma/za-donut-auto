@@ -26,14 +26,23 @@ SOUR = {
              "どうぐパワー：コイン", "どうぐパワー：とくべつ"],
     "異次元": ["どっさりパワー", "メガパワー：チャージ", "メガパワー：ながもち"],
 }
-# 照らし合わせに使う名前の一覧（サワー以外も、実機で見たものは入れておく）
-CATALOG = ([name for names in SOUR.values() for name in names] + [f"わざパワー：{t}" for t in TYPES]
-           + ["こうげきパワー", "とくこうパワー", "すばやさパワー"])
-# パワー名 → カテゴリ（同じカテゴリのパワーは 1 つのドーナツに 1 つまで）。分かっているサワー系だけ
-CATEGORY = {name: category for category, names in SOUR.items() for name in names}
+# スイート系（表記は攻略サイトの情報。実機で確認したら更新する）
+SWEET = {
+    "かがやき": [f"かがやきパワー：{t}" for t in TYPES] + ["かがやきパワー：ぜんぶ"],
+    "大きさ": ["オヤブンパワー", "でかでかパワー", "ちびちびパワー"],
+}
+# フレッシュ系（ハバンのドーナツで実機で確認したもの）
+FRESH = {
+    "ほかく": [f"ほかくパワー：{t}" for t in TYPES],
+}
+# 照らし合わせに使う名前の一覧（サワー・スイート・フレッシュ以外も、実機で見たものは入れておく）
+CATALOG = ([name for group in (SOUR, SWEET, FRESH) for names in group.values() for name in names]
+           + [f"わざパワー：{t}" for t in TYPES] + ["こうげきパワー", "とくこうパワー", "すばやさパワー"])
+# パワー名 → カテゴリ（同じカテゴリのパワーは 1 つのドーナツに 1 つまで）。分かっているサワー系・スイート系だけ
+CATEGORY = {name: category for group in (SOUR, SWEET, FRESH) for category, names in group.items() for name in names}
 
 DAKUTEN = "\u3099\u309a"  # 結合用の濁点・半濁点
-MATCH_MIN = 0.75  # これより似ていなければ未知のパワー
+MATCH_MIN = 0.65  # 別のパワーどうしの似ている度合いは最大 0.5。1 文字の読み違い（こおり→こあり 0.67）は拾う
 
 ROW_TOP = 830     # 1 行目の文字の上端（1920x1080）
 ROW_PITCH = 50

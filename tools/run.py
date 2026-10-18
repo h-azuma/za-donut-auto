@@ -178,14 +178,22 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
             return
         log.info("バックアップしました。")
         images = [done]
+        # 個数の上限がある狙いは 1 つ減らし、そろったら外す
+        changes = runner.targets.consume(result.powers) if result.hit else []
+        for change in changes:
+            log.info(change)
+        status = berry_text + "".join(f"\n{c}" for c in changes)
+        if runner.targets.empty():
+            stop(f"バックアップしました。{status}\n狙いがすべてそろったので止めます。", images)
+            return
         if left == 0:
-            stop(f"バックアップしました。{berry_text}\nきのみが足りないので止めます。", images)
+            stop(f"バックアップしました。{status}\nきのみが足りないので止めます。", images)
             return
         if until_out and not unread:
-            send(f"バックアップしました。{berry_text}\nきのみがなくなるまで続けます。", images)
+            send(f"バックアップしました。{status}\nきのみがなくなるまで続けます。", images)
             continue
         choice = discord.ask(
-            f"ポケモンセンターで回復して、バックアップしました。{berry_text}\n厳選を続けますか？",
+            f"ポケモンセンターで回復して、バックアップしました。{status}\n厳選を続けますか？",
             [("continue", "続ける", "primary"), ("until_out", "きのみがなくなるまで続ける", "primary"),
              ("stop", "止める", "danger")],
             images,
