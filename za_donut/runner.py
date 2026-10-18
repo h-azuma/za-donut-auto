@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from . import berries, powers, target, vision
 from .pico import Pico
@@ -35,6 +36,8 @@ WALK_TO_COUNTER_LAST = (-1.0, 0.0)       # → 「アンシャ」が見えるま
 BERRY_HOLD = 0.04   # きのみ選択の 1 入力（0.03/0.04 でも取りこぼしなし。余裕を持たせた値）
 BERRY_GAP = 0.06
 BERRY_SETTLE = 0.3  # カーソル移動・選択の後、画面が落ち着くまで
+BERRY_ROW_SPAN = (55, 38)  # 通知用に切り出すきのみの行（行の中心から上・下に何ピクセル）
+BERRY_ROW_X = (20, 680)
 COOK_SKIP_INTERVAL = 0.5  # 調理の演出を飛ばす A の間隔
 CUTSCENE_TIMEOUT = 75  # 昼夜の切り替わりの演出は 1 分弱。パーティ欄が戻った時点で待つのをやめる（これは上限）
 PRESENT_A_INTERVAL = 0.3  # 完成場面の A の間隔。完成場面は表示後 1〜1.5 秒は A を受け付けない。結果画面が出た直後の A では閉じない
@@ -71,7 +74,7 @@ class Runner:
         self.keep_screenshots = keep_screenshots
         self.last_result_path: Path | None = None  # 直近の当たり / 要確認の結果画面
         self.last_recipe: berries.Recipe = {}      # 直近の試行で使ったレシピ
-        # 直近の試行で、きのみを選んだ直後の残り個数（読めなければ None）と、そのときの画面・行
+        # 直近の試行で、きのみを選んだ直後の残り個数（読めなければ None）と、そのときの画面・行（通知の画像用）
         self.last_counts: dict[str, tuple[int | None, object, int]] = {}
 
     # ---- 画面待ち ----
@@ -380,24 +383,11 @@ class Runner:
         berries.save_list(names)
         return names
 
-    def read_berries(self, expected: dict[str, int] | None = None) -> tuple[dict[str, int | None], list[str]]:
-        """直近の試行で使ったきのみの残り個数（このドーナツの分を引いた数）を返す。
-
-        expected（前回の当たりの個数から計算した今回の個数）があれば答え合わせに使う。読めないか合わないときは
-        計算した個数を採り、その画面からまだ見本の無い数字（7 など）を覚える。戻り値は（個数, 計算値を採ったきのみ）。
-        """
-        counts: dict[str, int | None] = {}
-        fixed = []
-        for name, (n, frame, y) in self.last_counts.items():
-            want = (expected or {}).get(name)
-            if want is not None and n != want:
-                log.info(f"{name} の個数: 読み取り {n} / 計算上 {want} → 計算上の個数を使います")
-                if learned := vision.learn_count(frame, y, want):
-                    log.info(f"数字 {learned} の見本を覚えました")
-                n = want
-                fixed.append(name)
-            counts[name] = n
-        return counts, fixed
+    def save_berries(self) -> Path | None:
+        """直近の試行で選んだきのみの行（名前と「×残り個数」）を、選んだ直後の画面から切り出して並べて保存する。"""
+        rows = [frame[y - BERRY_ROW_SPAN[0]:y + BERRY_ROW_SPAN[1], BERRY_ROW_X[0]:BERRY_ROW_X[1]]
+                for _, frame, y in self.last_counts.values()]
+        return self.save(RESULT_DIR, "berries", np.vstack(rows)) if rows else None
 
     # ---- 当たりのバックアップ ----
 

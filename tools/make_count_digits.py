@@ -3,8 +3,8 @@
 使い方:
     python tools/make_count_digits.py
 
-SAMPLES は（画像、行の中心の y、写っている数）。7 はまだ見本がなく、初めて読んだときに自動で登録される
-（za_donut/vision.py の read_count）。
+SAMPLES は（画像、行の中心の y、写っている数）。7 はまだ見本が無いので、7 を含む数は読めない
+（きのみを選んだかの確認は、読めないときは省く）。
 """
 
 import sys

@@ -3,7 +3,8 @@
 当たりが出たら Discord に結果画面を送り、そのままポケモンセンターで回復してバックアップする。
 読めないパワーがあって判定できないときは、Discord で「バックアップする / 捨てて続ける / 止める」を聞く。
 バックアップが終わったら「続ける / きのみがなくなるまで続ける / 止める」をボタンで聞く。
-「きのみがなくなるまで続ける」を選ぶと以後は聞かず、レシピのきのみが 1 個分を下回ったところで止まる。
+「きのみがなくなるまで続ける」を選ぶと以後は聞かず、きのみを選ぶときに足りないと分かったところで止まる。
+バックアップ完了の通知には、使ったきのみの残り個数が写った画像（選んだときの一覧の行）を添付する。
 config/discord.json が無いとき（または --no-discord）は、結果画面のままアラーム音を鳴らして停止する。
 
 通常は手元に何も残さない（ログは画面に出すだけ。Discord に送った画面は送った後で消す）。
@@ -17,7 +18,6 @@ config/discord.json が無いとき（または --no-discord）は、結果画�
 """
 
 import argparse
-import json
 import logging
 import sys
 import time
@@ -30,7 +30,6 @@ sys.path.insert(0, str(ROOT))
 
 from za_donut.notify import Discord  # noqa: E402
 from za_donut.pico import Pico  # noqa: E402
-from za_donut import paths  # noqa: E402
 from za_donut.berries import RecipeStore  # noqa: E402
 from za_donut.berries import register_commands as register_recipe_commands  # noqa: E402
 from za_donut.runner import ERROR_DIR, OutOfBerries, Runner, StepFailed  # noqa: E402
@@ -57,23 +56,11 @@ def alarm(message: str) -> None:
         pass
 
 
-def berries_left(berries: dict[str, int | None], recipe: dict[str, int]) -> tuple[int | None, str]:
-    """レシピのきのみの残り個数から、あと何個作れるかと、通知用の文を返す（読めない数があれば None）。"""
-    parts = [f"{name} {'?' if n is None else n} 個" for name, n in berries.items()]
-    if any(n is None for n in berries.values()):
-        return None, f"きのみの残り: {' / '.join(parts)}（読み取れない数がありました）"
-    left = min(berries[name] // need for name, need in recipe.items())
-    return left, f"きのみの残り: {' / '.join(parts)}（あと {left} 個作れます）"
-
-
 def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: bool, until_out: bool) -> None:
     started = time.monotonic()
     tries = failures = 0
     # until_out: 「きのみがなくなるまで続ける」。True ならバックアップ後に聞かず、きのみが足りなくなったら止まる
     # 直前の当たりのときのきのみの残り個数（次の当たりの答え合わせ用）。再起動しても忘れないようにファイルにも残す
-    counts_path = paths.BERRY_COUNTS
-    last_berries: dict[str, int] = json.loads(counts_path.read_text(encoding="utf-8")) if counts_path.exists() else {}
-
     def send(text: str, images: list[Path | None]) -> None:
         """Discord に送り、送った画面は（デバッグモードでなければ）消す。"""
         discord.send(text, images)
@@ -159,37 +146,29 @@ def loop(runner: Runner, discord: Discord | None, max_tries: int, use_alarm: boo
             if choice == "discard":
                 continue
 
-        recipe = runner.last_recipe
-        expected = {name: last_berries[name] - need for name, need in recipe.items() if name in last_berries}
-        berries, fixed = runner.read_berries(expected)
-        last_berries = {**last_berries, **{name: n for name, n in berries.items() if n is not None}}
-        paths.write_state(counts_path, json.dumps(last_berries, ensure_ascii=False) + "\n")
-        left, berry_text = berries_left(berries, recipe)
-        if fixed:
-            berry_text += f"\n（{'・'.join(fixed)} は読み取りが合わなかったため、前回の個数から計算しました）"
-        unread = left is None
-        log.info(berry_text)
+        # きのみの残り個数は、選んだときの一覧の行を画像で送る（OCR の数字は当てにしない）
+        berries_image = runner.save_berries()
         try:
             done = runner.backup()
         except StepFailed as e:
             # 途中の状態が分からないので、自動ではやり直さない
+            runner.discard(berries_image)
             stop(f"バックアップの途中で失敗したため停止しました: {e}\n画面を確認して、手動で続きを行ってください。",
                  [runner.save(ERROR_DIR, "backup")])
             return
         log.info("バックアップしました。")
-        images = [done]
+        runner.discard(done)
+        images = [berries_image]  # 画像はきのみの残り個数（このドーナツを作った後の数）
         # 個数の上限がある狙いは 1 つ減らし、そろったら外す
         changes = runner.targets.consume(result.powers) if result.hit else []
         for change in changes:
             log.info(change)
-        status = berry_text + "".join(f"\n{c}" for c in changes)
+        status = "".join(f"\n{c}" for c in changes)
         if runner.targets.empty():
             stop(f"バックアップしました。{status}\n狙いがすべてそろったので止めます。", images)
             return
-        if left == 0:
-            stop(f"バックアップしました。{status}\nきのみが足りないので止めます。", images)
-            return
-        if until_out and not unread:
+        if until_out:
+            # きのみが足りなくなったら、次の試行できのみを選ぶときに分かって止まる
             send(f"バックアップしました。{status}\nきのみがなくなるまで続けます。", images)
             continue
         choice = discord.ask(

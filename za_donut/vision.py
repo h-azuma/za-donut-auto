@@ -158,16 +158,3 @@ def read_count(frame: np.ndarray, row_y: int) -> int | None:
         digits.append(best)
     return int("".join(map(str, digits)))
 
-
-def learn_count(frame: np.ndarray, row_y: int, value: int) -> list[int]:
-    """正しい個数 value が分かっているとき、まだ見本の無い数字をこの画面から見本として保存する。保存した数字を返す。"""
-    glyphs = count_glyphs(frame, row_y)
-    if len(glyphs) != len(str(value)):
-        return []
-    learned = []
-    for ch, glyph in zip(str(value), glyphs):
-        d = int(ch)
-        if _count_template(d) is None and d not in learned:
-            cv2.imwrite(str(TEMPLATE_DIR / f"count_{d}.png"), glyph)
-            learned.append(d)
-    return learned

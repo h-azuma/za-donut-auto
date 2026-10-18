@@ -51,7 +51,7 @@ Switch 2 ──HDMI──▶ キャプチャボード ──▶ OBS（仮想カ�
 | <img src="docs/images/04_anshya.jpg" width="260"><br>**④ アンシャへ**<br>「アンシャ」の名前が見えたら話しかける | <img src="docs/images/05_berries.jpg" width="260"><br>**⑤ きのみを選ぶ**<br>レシピのきのみを、名前と残り個数で確かめて選ぶ | <img src="docs/images/06_cook.jpg" width="260"><br>**⑥ 作る**<br>調理の演出は A で飛ばす |
 | <img src="docs/images/07_result.jpg" width="260"><br>**⑦ パワーを読む**<br>外れなら ① へ。当たりなら ⑧ へ | <img src="docs/images/08_heal.jpg" width="260"><br>**⑧ ポケモンセンターで回復**<br>「休ませる」でバックアップが取られる | <img src="docs/images/09_report.jpg" width="260"><br>**⑨ 保存を待つ**<br>右上の「レポート中」が消えたら完了 |
 
-当たりのバックアップが終わると、Discord できのみの残り個数（あと何個作れるか）を伝え、「続ける / きのみがなくなるまで続ける / 止める」を聞く。
+当たりのバックアップが終わると、使ったきのみの残り個数が写った画像（選んだときの一覧の行）を Discord に送り、「続ける / きのみがなくなるまで続ける / 止める」を聞く。「きのみがなくなるまで続ける」を選ぶと以後は聞かず、きのみを選ぶときに足りないと分かったところで止まる。
 
 ゲーム側の手順の詳細は [making-donut.md](making-donut.md)、開発の経緯は [ROADMAP.md](ROADMAP.md)。
 
@@ -187,7 +187,7 @@ python tools/run.py --device "OBS Virtual Camera"
 
 | 状況 | 動き |
 |---|---|
-| 当たり | Discord に通知してバックアップし、きのみの残り個数を添えて「続ける / きのみがなくなるまで続ける / 止める」を聞く |
+| 当たり | Discord に通知してバックアップし、きのみの残り個数の画像を添えて「続ける / きのみがなくなるまで続ける / 止める」を聞く |
 | 読めないパワーがあり判定できない | 結果画面のまま、Discord で「バックアップする / 捨てて続ける / 止める」を聞く（外れをバックアップすると、そのドーナツの分のきのみが減るため） |
 | レシピのきのみが足りない | Discord に通知して停止 |
 | 昼夜の切り替わりの演出が入った | 演出が終わるのを待ってホテルZ からやり直す。Discord で「バックアップを取り直すか」を聞く（10 分返事がなければ取り直さない） |
@@ -224,7 +224,7 @@ tools/
   pico_console.py       Pico に手でコマンドを送るコンソール
   discord_test.py       Discord の接続テスト
 config/         設定（recipe.json・target.json・discord.json）。discord.json は git 管理外
-state/          プログラムが書く記録（きのみ一覧の並び、前回の残り個数）。git 管理外
+state/          プログラムが書く記録（きのみ一覧の並び）。git 管理外
 templates/      画面判定用のテンプレート画像
 docs/           ファームウェアのビルド手順、Discord の設定手順、README の画像
 ```
