@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from concurrent.futures import Future, InvalidStateError
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
@@ -67,6 +68,7 @@ class Discord:
         self.tree = app_commands.CommandTree(self.client)  # スラッシュコマンド（start() の前に登録する）
         self.loop = asyncio.new_event_loop()
         self._ready = threading.Event()
+        self.stop_requested = threading.Event()  # /stop で立つ（厳選のループが区切りで見て止まる）
         self.client.event(self.on_ready)
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -132,6 +134,7 @@ class Discord:
         """ボタン付きで送り、押されるまで待って key を返す。choices は (key, ラベル, primary/danger/secondary)。
 
         timeout 秒たっても押されなければ default を返す（その後のボタンは効かない）。
+        待っている間に /stop されたら、choices に "stop" があれば "stop"、なければ default を返す。
         """
         future: Future = Future()
 
@@ -139,11 +142,18 @@ class Discord:
             await self._send(text, image, _Choices(self.user_id, choices, future))
 
         asyncio.run_coroutine_threadsafe(post(), self.loop).result(30)
-        try:
-            return future.result(timeout)
-        except FutureTimeout:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            wait = 1.0 if deadline is None else max(0.0, min(1.0, deadline - time.monotonic()))
             try:
-                future.set_result(default)  # 以後に押されたボタンは「選択済み」になる
-            except InvalidStateError:       # ちょうど押された
+                return future.result(wait)
+            except FutureTimeout:
+                stopping = self.stop_requested.is_set()
+                if not stopping and (deadline is None or time.monotonic() < deadline):
+                    continue
+            value = "stop" if stopping and any(key == "stop" for key, _, _ in choices) else default
+            try:
+                future.set_result(value)  # 以後に押されたボタンは「選択済み」になる
+            except InvalidStateError:     # ちょうど押された
                 pass
             return future.result()

@@ -131,6 +131,14 @@ def reset(p: Pico, shot: Shot) -> None:
     shot("home")
 
 
+def sleep(p: Pico, shot: Shot) -> None:
+    """HOME 長押しでクイック設定を開き、「スリープ」を選ぶ（runner.sleep_console と同じ操作）。"""
+    p.press("home", hold=1.5, wait=1.0)
+    shot("quick_settings")
+    p.press("a", wait=3.0)
+    shot("asleep")
+
+
 STEPS = {
     "launch": launch,
     "backup_menu": backup_menu,
@@ -141,4 +149,5 @@ STEPS = {
     "select_berries": select_berries,
     "cook": cook,
     "reset": reset,
+    "sleep": sleep,
 }

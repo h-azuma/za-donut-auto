@@ -3,12 +3,14 @@
 各段階で「想定した画面になったか」をテンプレートで確認しながら進む。
 想定外の画面で止まったときは、ソフトを終了して最初からやり直す（終了してもバックアップは失われない）。
 当たりが出たら結果画面のまま停止する。ポケモンセンターでのバックアップは手動で行う。
+Discord の /stop は、ボタン操作か画面の取得のたびに確かめ、頼まれていたらその場で中断する（StopRequested）。
 """
 
 import logging
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +43,12 @@ BERRY_ROW_X = (20, 680)
 COOK_SKIP_INTERVAL = 0.5  # 調理の演出を飛ばす A の間隔
 CUTSCENE_TIMEOUT = 75  # 昼夜の切り替わりの演出は 1 分弱。パーティ欄が戻った時点で待つのをやめる（これは上限）
 PRESENT_A_INTERVAL = 0.3  # 完成場面の A の間隔。完成場面は表示後 1〜1.5 秒は A を受け付けない。結果画面が出た直後の A では閉じない
+SLEEP_HOME_HOLD = 1.5  # HOME 長押しでクイック設定を開く（先頭の「スリープ」が選ばれた状態で開く）
+# スリープ後の映像は一様な暗い灰色（実測: 平均 15、ばらつき 0.5）。暗く、かつ一様な画面が続いたらスリープしたとみなす
+SLEEP_DARK = 40      # 画面の明るさの平均（0〜255）がこれ未満
+SLEEP_FLAT = 3       # 明るさのばらつき（標準偏差）がこれ未満
+SLEEP_HOLD = 2.0     # この秒数続いたら確定
+SLEEP_TIMEOUT = 10
 
 
 @dataclass(frozen=True)
@@ -61,11 +69,51 @@ class OutOfBerries(Exception):
     """レシピのきのみが足りない（やり直しても同じなので、厳選を止める）。"""
 
 
+class StopRequested(Exception):
+    """Discord の /stop で止めるよう頼まれた（今の操作をその場で中断する）。"""
+
+
+class _StopCheckedPico:
+    """ボタンを押す前に止めるよう頼まれていないか確かめる Pico。離す操作（release_all・stick(0, 0)）は確かめない。"""
+
+    def __init__(self, pico: Pico, check: Callable[[], None]):
+        self._pico = pico
+        self._check = check
+
+    def press(self, *buttons: str, **kwargs) -> None:
+        self._check()
+        self._pico.press(*buttons, **kwargs)
+
+    def tilt(self, *args, **kwargs) -> None:
+        self._check()
+        self._pico.tilt(*args, **kwargs)
+
+    def stick(self, x: float, y: float, stick: str = "l_stick") -> None:
+        if (x, y) != (0, 0):
+            self._check()
+        self._pico.stick(x, y, stick)
+
+    def release_all(self) -> None:
+        self._pico.release_all()
+
+
+class _StopCheckedScreen:
+    """画面を取る前に止めるよう頼まれていないか確かめる Screen（待っている間にも止まれるように）。"""
+
+    def __init__(self, screen: Screen, check: Callable[[], None]):
+        self._screen = screen
+        self._check = check
+
+    def grab(self, timeout: float = 3.0):
+        self._check()
+        return self._screen.grab(timeout)
+
+
 class Runner:
     def __init__(self, pico: Pico, screen: Screen, targets: target.TargetStore, recipes: berries.RecipeStore,
-                 keep_screenshots: bool = True):
-        self.p = pico
-        self.s = screen
+                 keep_screenshots: bool = True, stop_requested: Callable[[], bool] = lambda: False):
+        self.p = _StopCheckedPico(pico, self.check_stop)
+        self.s = _StopCheckedScreen(screen, self.check_stop)
         self.targets = targets  # 狙うパワー（Discord から途中で変えられる）
         self.recipes = recipes  # 使うきのみ（同上）
         self.berry_list = berries.load_list()  # きのみ一覧の並び（ずれていたら読み直す）
@@ -76,6 +124,23 @@ class Runner:
         self.last_recipe: berries.Recipe = {}      # 直近の試行で使ったレシピ
         # 直近の試行で、きのみを選んだ直後の残り個数（読めなければ None）と、そのときの画面・行（通知の画像用）
         self.last_counts: dict[str, tuple[int | None, object, int]] = {}
+        self.stop_requested = stop_requested  # True になったら、次のボタン操作か画面の取得で StopRequested を出す
+        self._no_stop = 0  # no_stop() の中（> 0）では中断しない
+
+    # ---- 中断 ----
+
+    def check_stop(self) -> None:
+        if not self._no_stop and self.stop_requested():
+            raise StopRequested()
+
+    @contextmanager
+    def no_stop(self) -> Iterator[None]:
+        """中断すると困る操作（当たりの読み取り・バックアップ）の間は止めない。抜けた後の最初の操作で止まる。"""
+        self._no_stop += 1
+        try:
+            yield
+        finally:
+            self._no_stop -= 1
 
     # ---- 画面待ち ----
 
@@ -118,6 +183,10 @@ class Runner:
 
     def close_software(self) -> None:
         """HOME に戻り、ZA が起動中なら終了する。"""
+        with self.no_stop():  # 終わりきる前に中断すると、閉じている途中で次の操作をして失敗する
+            self._close_software()
+
+    def _close_software(self) -> None:
         self.p.press("home", wait=1.5)
         frame = self.s.grab()
         if not vision.visible(frame, "home_gear"):
@@ -247,6 +316,10 @@ class Runner:
         time.sleep(0.5)
 
     def read_result(self) -> DonutResult:
+        with self.no_stop():  # 当たりを読んでいる途中で止めると、当たりを捨ててしまう
+            return self._read_result()
+
+    def _read_result(self) -> DonutResult:
         frames = [self.s.grab() for _ in range(3)]
         readings = [powers.read_powers(f) for f in frames]
         if len(set(readings)) != 1:
@@ -396,6 +469,10 @@ class Runner:
 
         ポケモンセンターの NPC に話しかけるとバックアップが上書きされる。当たりのときだけ呼ぶこと。
         """
+        with self.no_stop():  # 当たりを保存し終えるまで止めない
+            return self._backup()
+
+    def _backup(self) -> Path:
         self.press_until("a", "donut_again", tries=3, timeout=2.5)  # 結果画面を閉じる
         self.p.press("b", wait=0)                                    # 「またあとで」
         self.wait_for("talk_anshya", 8)
@@ -424,9 +501,10 @@ class Runner:
 
     def refresh_backup(self) -> Path:
         """ドーナツを作る前の状態で、今の時刻のバックアップを取り直す（昼夜の切り替わりを越えた後に使う）。"""
-        if not vision.visible(self.s.grab(), "talk_pc"):  # 読み込み直後ならカウンター前にいる
-            self.travel_to_pokecenter()
-        return self.save_at_counter()
+        with self.no_stop():  # レポートを書いている途中で止めない
+            if not vision.visible(self.s.grab(), "talk_pc"):  # 読み込み直後ならカウンター前にいる
+                self.travel_to_pokecenter()
+            return self.save_at_counter()
 
     def save_at_counter(self) -> Path:
         """ポケモンセンターのカウンター前（「A 話しかける」が出ている状態）から、回復してバックアップを取る。"""
@@ -461,6 +539,56 @@ class Runner:
                 raise StepFailed("「レポート中」が 30 秒たっても消えませんでした")
             time.sleep(0.1)
         return self.save(BACKUP_DIR, "backup_done")
+
+    # ---- 停止 ----
+
+    def restore_and_sleep(self, tries: int = 3) -> tuple[Path | None, str | None, bool]:
+        """/stop の後始末。途中の状態を残さないよう、ソフトを終了してバックアップから再開し、
+        ポケモンセンターで回復してレポートを書いてから本体をスリープさせる。
+
+        （レポート後の画面, 失敗したときの理由, スリープを確認できたか）を返す。
+        レポートを書けなくてもスリープはさせる（ソフトを終了できていれば、変な状態では保存されない）。
+        """
+        with self.no_stop():
+            self.p.release_all()
+            path, error = None, None
+            for i in range(tries):
+                try:
+                    self.close_software()
+                    self.launch_to_title()
+                    self.load_backup()
+                    path = self.refresh_backup()  # 読み込んだ状態のまま、明示的にレポートを書く
+                    error = None
+                    break
+                except StepFailed as e:
+                    error = str(e)
+                    log.info(f"停止の後始末に失敗しました（{i + 1} 回目）: {e}")
+                    self.p.release_all()
+            return path, error, self.sleep_console()
+
+    def sleep_console(self) -> bool:
+        """本体をスリープさせる（HOME 長押し → 「スリープ」）。映像が消えたのを確認できたら True。
+
+        ゲームは中断された状態で残るので、起こすと止めたときの画面から見られる。
+        """
+        self.p.release_all()
+        self.p.press("home", hold=SLEEP_HOME_HOLD, wait=1.0)
+        self.p.press("a", wait=0)
+        deadline = time.monotonic() + SLEEP_TIMEOUT
+        dark_since = None
+        while time.monotonic() < deadline:
+            try:
+                frame = self.s.grab()
+            except RuntimeError:  # 信号が切れてフレームが届かない
+                return True
+            if frame.mean() < SLEEP_DARK and frame.std() < SLEEP_FLAT:
+                dark_since = dark_since or time.monotonic()
+                if time.monotonic() - dark_since >= SLEEP_HOLD:
+                    return True
+            else:
+                dark_since = None
+            time.sleep(0.3)
+        return False
 
     # ---- 1 回分 ----
 
