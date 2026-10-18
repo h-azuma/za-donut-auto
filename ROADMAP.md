@@ -38,7 +38,7 @@ Switch 2 ──HDMI──▶ キャプチャボード ──▶ OBS（仮想カ�
 
 ## Step 1. ゲーム側の情報収集（完了）
 
-- [x] ドーナツ作成の操作手順を書き出す → [making-donut.md](making-donut.md)
+- [x] ドーナツ作成の操作手順を書き出す → [docs/making-donut-procedure.md](docs/making-donut-procedure.md)
 - [x] 各画面のスクリーンショットを撮る → `screenshots/steps/`（`tools/run_step.py` で区切りごとに実行・撮影）
 - [x] オートセーブをオフにできるか確認する → できない。ドーナツ作成時に必ずオートセーブされる
 - [x] リセット方法を決める → HOME → ソフト終了 → 再起動 → タイトルで X＋B＋上 → バックアップで始める

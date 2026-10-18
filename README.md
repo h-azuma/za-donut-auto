@@ -53,7 +53,7 @@ Switch 2 ──HDMI──▶ キャプチャボード ──▶ OBS（仮想カ�
 
 当たりのバックアップが終わると、使ったきのみの残り個数が写った画像（選んだときの一覧の行）を Discord に送り、「続ける / きのみがなくなるまで続ける / 止める」を聞く。「きのみがなくなるまで続ける」を選ぶと以後は聞かず、きのみを選ぶときに足りないと分かったところで止まる。
 
-ゲーム側の手順の詳細は [making-donut.md](making-donut.md)、開発の経緯は [ROADMAP.md](ROADMAP.md)。
+ゲーム側の手順の詳細は [docs/making-donut-procedure.md](docs/making-donut-procedure.md)、開発の経緯は [ROADMAP.md](ROADMAP.md)。
 
 ## 画面の読み取り方
 

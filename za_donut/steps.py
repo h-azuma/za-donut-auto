@@ -1,4 +1,4 @@
-"""making-donut.md の手順を、調整しやすい単位に区切った操作。
+"""docs/making-donut-procedure.md の手順を、調整しやすい単位に区切った操作。
 
 秒数は未検証の仮の値。tools/run_step.py で 1 ステップずつ実行し、スクショを見ながら調整する。
 各ステップは shot(name) を呼ぶと、その時点の画面を保存する。
