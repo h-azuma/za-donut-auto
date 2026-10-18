@@ -33,7 +33,7 @@ SWEET = {
 }
 # フレッシュ系（ハバンのドーナツで実機で確認したもの）
 FRESH = {
-    "ほかく": [f"ほかくパワー：{t}" for t in TYPES],
+    "ほかく": [f"ほかくパワー：{t}" for t in TYPES] + ["ほかくパワー：すべて"],
 }
 # 照らし合わせに使う名前の一覧（サワー・スイート・フレッシュ以外も、実機で見たものは入れておく）
 CATALOG = ([name for group in (SOUR, SWEET, FRESH) for names in group.values() for name in names]
